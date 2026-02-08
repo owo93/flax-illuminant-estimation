@@ -7,7 +7,9 @@ A vision transformer (ViT) model for estimating illuminant color in images.
 ```
 main.py -> CLI entrypoint
 src/
-├── model.py
-└── train.py
-└── eval.py
+└── flax_illuminant_estimation/
+    ├── __init__.py
+    ├── model.py
+    ├── train.py
+    └── eval.py
 ```
