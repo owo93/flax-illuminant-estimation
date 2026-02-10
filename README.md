@@ -5,7 +5,6 @@ A vision transformer (ViT) model for estimating illuminant color in images.
 - Built with Flax
 
 ```
-main.py -> CLI entrypoint
 src/
 └── data/
     ├── SimpleCube++/   dataset

@@ -8,7 +8,10 @@ authors = [
 ]
 requires-python = ">=3.14"
 dependencies = [
+    "flax[cuda]>=0.12.3",
     "jax[cuda13]>=0.9.0.1",
+    "pillow>=12.1.0",
+    "tqdm>=4.67.3",
     "typer>=0.21.1",
     "typing>=3.10.0.0",
 ]
