@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Exclude local dataset
+src/data/SimpleCube++
