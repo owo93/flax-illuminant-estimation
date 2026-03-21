@@ -124,6 +124,8 @@ class ViT(nnx.Module):
         feat = jnp.mean(x, axis=1)
 
         out = self.head(feat)
-        out = out / jnp.linalg.norm(out, axis=-1, keepdims=True)
+        norm = jnp.linalg.norm(out, axis=-1, keepdims=True)
+        norm = jnp.where(norm < 1e-6, 1.0, norm)
+        out = out / norm  # type: ignore
 
         return out

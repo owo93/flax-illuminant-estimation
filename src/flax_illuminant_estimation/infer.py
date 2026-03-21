@@ -1,5 +1,5 @@
-import argparse
 import pickle
+import sys
 from pathlib import Path
 
 import jax
@@ -7,13 +7,8 @@ import jax.numpy as jnp
 from flax import nnx
 from PIL import Image
 
+from flax_illuminant_estimation.config import ModelConfig
 from flax_illuminant_estimation.model import ViT
-
-IMG_SIZE = 224
-PATCH_SIZE = 16
-DIM = 384
-DEPTH = 6
-NUM_HEADS = 6
 
 
 def preprocess_image(path, size=224):
@@ -30,22 +25,12 @@ def estimate_illuminant(model, image_path, rngs=None):
     return pred[0]
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Estimate illuminant from an image")
-    parser.add_argument("image", help="Path to input image")
-    parser.add_argument(
-        "--checkpoint",
-        type=str,
-        default="checkpoints/checkpoint_epoch_010.pkl",
-        help="Path to checkpoint file",
-    )
-    args = parser.parse_args()
-
+def main(args):
     checkpoint_path = Path(args.checkpoint)
     if not checkpoint_path.exists():
         print(f"Error: Checkpoint not found: {checkpoint_path}")
         print("Available checkpoints:")
-        for p in Path("checkpoints").glob("*.pkl"):
+        for p in sorted(Path("checkpoints").glob("*.pkl")):
             print(f"  {p}")
         return
 
@@ -53,12 +38,13 @@ def main():
     with open(checkpoint_path, "rb") as f:
         checkpoint = pickle.load(f)
 
+    config = ModelConfig()
     model = ViT(
-        img_size=IMG_SIZE,
-        patch_size=PATCH_SIZE,
-        dim=DIM,
-        depth=DEPTH,
-        num_heads=NUM_HEADS,
+        img_size=config.img_size,
+        patch_size=config.patch_size,
+        dim=config.dim,
+        depth=config.depth,
+        num_heads=config.num_heads,
         rngs=nnx.Rngs(0),
     )
     nnx.update(model, checkpoint["model"])
@@ -71,14 +57,13 @@ def main():
     rngs = nnx.Rngs(dropout=jax.random.key(0))
     pred = estimate_illuminant(model, args.image, rngs)
 
-    pred_sum = pred[0] + pred[1] + pred[2]
+    pred_sum = pred.sum()
+    r, g, b = pred / pred_sum if pred_sum > 0 else (0.0, 0.0, 0.0)
+
     if pred_sum > 0:
-        print(f"Chromaticity: [{pred[0]:.4f}, {pred[1]:.4f}, {pred[2]:.4f}]")
-        print(
-            f"Normalized: [{pred[0] / pred_sum:.4f}, {pred[1] / pred_sum:.4f}, {pred[2] / pred_sum:.4f}]"
-        )
-        print(f"RGB: [{pred[0] * 255:.0f}, {pred[1] * 255:.0f}, {pred[2] * 255:.0f}]")
+        print(f"Chromaticity: [{r:.4f}, {g:.4f}, {b:.4f}]")
+        print(f"RGB: [{r * 255:.0f}, {g * 255:.0f}, {b * 255:.0f}]")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

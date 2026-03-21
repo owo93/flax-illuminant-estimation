@@ -1,6 +1,5 @@
 import pickle
 import uuid
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -10,29 +9,24 @@ from tqdm import tqdm
 
 import wandb
 from data.loader import SimpleCubePPDataset
+from flax_illuminant_estimation.config import TrainerConfig
 from flax_illuminant_estimation.model import ViT
 
-DATASET_ROOT = Path("src/data")
-IMG_SIZE = 224
-PATCH_SIZE = 16
-DIM = 384
-DEPTH = 6
-NUM_HEADS = 6
-BATCH_SIZE = 48
-LEARNING_RATE = 1e-5
-EPOCHS = 10
 
-CHECKPOINT_DIR = Path("checkpoints")
-CHECKPOINT_DIR.mkdir(exist_ok=True)
+DTYPE_MAP = {
+    "float16": jnp.float16,
+    "bfloat16": jnp.bfloat16,
+    "float32": jnp.float32,
+}
 
 
-def save_checkpoint(model, epoch, test_loss):
+def save_checkpoint(model, epoch, test_loss, config: TrainerConfig):
     checkpoint = {
         "model": nnx.state(model),
         "epoch": epoch,
         "test_loss": test_loss,
     }
-    path = CHECKPOINT_DIR / f"checkpoint_epoch_{epoch:03d}.pkl"
+    path = config.checkpoint_dir / f"checkpoint_epoch_{epoch:03d}.pkl"
     with open(path, "wb") as f:
         pickle.dump(checkpoint, f)
     return path
@@ -46,21 +40,27 @@ def load_checkpoint(path, model):
 
 
 def normalize_illuminant(illum):
-    norm = jnp.linalg.norm(illum, axis=-1, keepdims=True)
+    norm = jnp.linalg.norm(illum.astype(jnp.float32), axis=-1, keepdims=True)
     norm = jnp.where(norm < 1e-8, 1.0, norm)
-    return illum / norm
+    return (illum.astype(jnp.float32) / norm).astype(illum.dtype)
 
 
 def angular_loss(pred, target):
-    return jnp.mean(jnp.arccos(jnp.clip(jnp.sum(pred * target, axis=-1), -1, 1)))
+    pred_f32 = jnp.asarray(pred, dtype=jnp.float32)
+    target_f32 = jnp.asarray(target, dtype=jnp.float32)
+    cos_sim = jnp.sum(pred_f32 * target_f32, axis=-1)
+    cos_sim = jnp.clip(cos_sim, -1.0 + 1e-7, 1.0 - 1e-7)
+    return jnp.mean(jnp.arccos(cos_sim))
 
 
-def train_step(model, optimizer, rngs, batch_images, batch_illum):
+def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
     def loss_fn(model):
-        pred = model(batch_images, train=True, rngs=rngs)
-        target = normalize_illuminant(batch_illum)
+        images = batch_images.astype(dtype)
+        illum = batch_illum.astype(dtype)
+        pred = model(images, train=True, rngs=rngs)
+        target = normalize_illuminant(illum)
         loss = angular_loss(pred, target)
-        return loss
+        return loss.astype(jnp.float32)
 
     loss, grads = nnx.value_and_grad(loss_fn)(model)
     if jnp.isnan(loss):
@@ -76,49 +76,51 @@ def evaluate(model, rngs, batch_images, batch_illum):
     return angular_loss(pred, target)
 
 
-def main():
+def main(config: TrainerConfig | None = None):
+    if config is None:
+        config = TrainerConfig()
+
+    jax.config.update("jax_default_matmul_precision", "high")
+
+    dtype = DTYPE_MAP.get(config.dtype, jnp.float32)
+
     train_ds = SimpleCubePPDataset("train")
     test_ds = SimpleCubePPDataset("test")
 
-    rngs = nnx.Rngs(0)
+    rngs = nnx.Rngs(config.seed)
     model = ViT(
-        img_size=IMG_SIZE,
-        patch_size=PATCH_SIZE,
-        dim=DIM,
-        depth=DEPTH,
-        num_heads=NUM_HEADS,
+        img_size=config.img_size,
+        patch_size=config.patch_size,
+        dim=config.dim,
+        depth=config.depth,
+        num_heads=config.num_heads,
         rngs=rngs,
     )
-    optimizer = nnx.ModelAndOptimizer(model, optax.adamw(LEARNING_RATE), wrt=nnx.Param)
-
-    rng_key = jax.random.key(42)
-
-    config = {
-        "img_size": IMG_SIZE,
-        "patch_size": PATCH_SIZE,
-        "dim": DIM,
-        "depth": DEPTH,
-        "num_heads": NUM_HEADS,
-        "batch_size": BATCH_SIZE,
-        "lr": LEARNING_RATE,
-        "epochs": EPOCHS,
-    }
-
-    wandb.init(
-        project="flax-illuminant-estimation", name=str(uuid.uuid4()), config=config
+    optimizer = nnx.ModelAndOptimizer(
+        model, optax.adamw(config.learning_rate), wrt=nnx.Param
     )
 
-    print(f"Training on {jax.devices()}")
+    rng_key = jax.random.key(config.seed)
 
-    for epoch in range(EPOCHS):
+    wandb.init(
+        project="flax-illuminant-estimation",
+        name=str(uuid.uuid4()),
+        config=config.to_dict(),
+    )
+
+    print(f"Training on {jax.devices()} | Precision: {config.precision} ({dtype})")
+
+    for epoch in range(config.epochs):
         train_loss = 0.0
         num_train_batches = 0
 
-        pbar = tqdm(train_ds.batches(BATCH_SIZE), desc="Train", leave=False, ncols=80)
+        pbar = tqdm(
+            train_ds.batches(config.batch_size), desc="Train", leave=False, ncols=80
+        )
         for batch_images, batch_illum in pbar:
             rng_key, params_key, dropout_key = jax.random.split(rng_key, num=3)
             rngs = nnx.Rngs(params=params_key, dropout=dropout_key)
-            loss = train_step(model, optimizer, rngs, batch_images, batch_illum)
+            loss = train_step(model, optimizer, rngs, batch_images, batch_illum, dtype)
             train_loss += float(loss)
             num_train_batches += 1
             pbar.set_postfix(loss=f"{loss:.4f}", refresh=True)
@@ -128,14 +130,16 @@ def main():
         test_loss = 0.0
         num_test_batches = 0
         eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
-        for batch_images, batch_illum in test_ds.batches(BATCH_SIZE, shuffle=False):
+        for batch_images, batch_illum in test_ds.batches(
+            config.batch_size, shuffle=False
+        ):
             loss = evaluate(model, eval_rngs, batch_images, batch_illum)
             test_loss += float(loss)
             num_test_batches += 1
 
         test_loss /= num_test_batches
 
-        path = save_checkpoint(model, epoch + 1, test_loss)
+        path = save_checkpoint(model, epoch + 1, test_loss, config)
 
         wandb.log(
             {
@@ -146,7 +150,7 @@ def main():
         )
 
         tqdm.write(
-            f"Epoch {epoch + 1:>2}/{EPOCHS} | Train: {train_loss:.4f} | Test: {test_loss:.4f} | Saved: {path.name}"
+            f"Epoch {epoch + 1:>2}/{config.epochs} | Train: {train_loss:.4f} | Test: {test_loss:.4f} | Saved: {path.name}"
         )
 
     wandb.finish()
