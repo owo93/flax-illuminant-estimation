@@ -1,9 +1,13 @@
 import pickle
+import sys
 import uuid
+from dataclasses import asdict
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import optax
+import yaml
 from flax import nnx
 from tqdm import tqdm
 
@@ -11,7 +15,6 @@ import wandb
 from data.loader import SimpleCubePPDataset
 from flax_illuminant_estimation.config import TrainerConfig
 from flax_illuminant_estimation.model import ViT
-
 
 DTYPE_MAP = {
     "float16": jnp.float16,
@@ -29,14 +32,14 @@ def save_checkpoint(model, epoch, test_loss, config: TrainerConfig):
     path = config.checkpoint_dir / f"checkpoint_epoch_{epoch:03d}.pkl"
     with open(path, "wb") as f:
         pickle.dump(checkpoint, f)
-    return path
+        return path
 
 
 def load_checkpoint(path, model):
     with open(path, "rb") as f:
         checkpoint = pickle.load(f)
-    nnx.update(model, checkpoint["model"])
-    return checkpoint
+        nnx.update(model, checkpoint["model"])
+        return checkpoint
 
 
 def normalize_illuminant(illum):
@@ -66,7 +69,7 @@ def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
     if jnp.isnan(loss):
         grads = jax.tree.map(jnp.zeros_like, grads)
         print("Warning: NaN loss detected, skipping gradient update")
-    optimizer.update(grads)
+        optimizer.update(grads)
     return loss
 
 
@@ -76,8 +79,20 @@ def evaluate(model, rngs, batch_images, batch_illum):
     return angular_loss(pred, target)
 
 
-def main(config: TrainerConfig | None = None):
-    if config is None:
+def load_config(path) -> TrainerConfig:
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+
+    config = asdict(TrainerConfig())
+    merge = {**config, **data}
+    merge["checkpoint_dir"] = Path(merge["checkpoint_dir"])
+    return TrainerConfig(**merge)
+
+
+def main(args):
+    if args.config:
+        config = load_config(args.config)
+    else:
         config = TrainerConfig()
 
     jax.config.update("jax_default_matmul_precision", "high")
@@ -157,4 +172,4 @@ def main(config: TrainerConfig | None = None):
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
