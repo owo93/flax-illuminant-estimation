@@ -143,11 +143,6 @@ def main(args):
         )
         start_epoch = train_state.epoch
         rng_key = jax.random.key(config.seed)
-        wandb.init(
-            project="flax-illuminant-estimation",
-            name=str(uuid.uuid4()),
-            config=config.to_dict(),
-        )
         print(f"Resumed from epoch {start_epoch}")
     else:
         rngs = nnx.Rngs(config.seed)
@@ -164,65 +159,72 @@ def main(args):
         )
         start_epoch = 0
         rng_key = jax.random.key(config.seed)
-        wandb.init(
-            project="flax-illuminant-estimation",
-            name=str(uuid.uuid4()),
-            config=config.to_dict(),
+
+    with wandb.init(
+        project="flax-illuminant-estimation",
+        name=str(uuid.uuid4()),
+        config=config.to_dict(),
+    ) as run:
+        print(
+            f"Training on {jax.devices()} | Precision: {run.config.precision} ({dtype})"
         )
 
-    print(f"Training on {jax.devices()} | Precision: {config.precision} ({dtype})")
+        for epoch in range(start_epoch, run.config.epochs):
+            train_loss = 0.0
+            num_train_batches = 0
 
-    for epoch in range(start_epoch, config.epochs):
-        train_loss = 0.0
-        num_train_batches = 0
+            pbar = tqdm(
+                train_ds.batches(run.config.batch_size),
+                desc="Train",
+                leave=False,
+                ncols=80,
+            )
+            for batch_images, batch_illum in pbar:
+                rng_key, params_key, dropout_key = jax.random.split(rng_key, num=3)
+                rngs = nnx.Rngs(params=params_key, dropout=dropout_key)
+                loss = train_step(
+                    model, optimizer, rngs, batch_images, batch_illum, dtype
+                )
+                train_loss += float(loss)
+                num_train_batches += 1
+                pbar.set_postfix(loss=f"{loss:.4f}", refresh=True)
 
-        pbar = tqdm(
-            train_ds.batches(config.batch_size), desc="Train", leave=False, ncols=80
-        )
-        for batch_images, batch_illum in pbar:
-            rng_key, params_key, dropout_key = jax.random.split(rng_key, num=3)
-            rngs = nnx.Rngs(params=params_key, dropout=dropout_key)
-            loss = train_step(model, optimizer, rngs, batch_images, batch_illum, dtype)
-            train_loss += float(loss)
-            num_train_batches += 1
-            pbar.set_postfix(loss=f"{loss:.4f}", refresh=True)
+            train_loss /= num_train_batches
 
-        train_loss /= num_train_batches
+            test_loss = 0.0
+            num_test_batches = 0
+            eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
+            for batch_images, batch_illum in test_ds.batches(
+                run.config.batch_size, shuffle=False
+            ):
+                loss = evaluate(model, eval_rngs, batch_images, batch_illum)
+                test_loss += float(loss)
+                num_test_batches += 1
 
-        test_loss = 0.0
-        num_test_batches = 0
-        eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
-        for batch_images, batch_illum in test_ds.batches(
-            config.batch_size, shuffle=False
-        ):
-            loss = evaluate(model, eval_rngs, batch_images, batch_illum)
-            test_loss += float(loss)
-            num_test_batches += 1
+            test_loss /= num_test_batches
 
-        test_loss /= num_test_batches
+            graphdef, model_state = nnx.split(model)
+            train_state = TrainState(
+                graphdef=graphdef,
+                model_state=model_state,
+                epoch=epoch + 1,
+                test_loss=test_loss,
+            )
+            path = save_checkpoint(train_state, config)
 
-        graphdef, model_state = nnx.split(model)
-        train_state = TrainState(
-            graphdef=graphdef,
-            model_state=model_state,
-            epoch=epoch + 1,
-            test_loss=test_loss,
-        )
-        path = save_checkpoint(train_state, config)
+            run.log(
+                {
+                    "train_loss": train_loss,
+                    "test_loss": test_loss,
+                    "epoch": epoch + 1,
+                }
+            )
 
-        wandb.log(
-            {
-                "train_loss": train_loss,
-                "test_loss": test_loss,
-                "epoch": epoch + 1,
-            }
-        )
+            tqdm.write(
+                f"Epoch {epoch + 1:>2}/{run.config.epochs} | Train: {train_loss:.4f} | Test: {test_loss:.4f} | Saved: {path}"
+            )
 
-        tqdm.write(
-            f"Epoch {epoch + 1:>2}/{config.epochs} | Train: {train_loss:.4f} | Test: {test_loss:.4f} | Saved: {path}"
-        )
-
-    wandb.finish()
+        run.finish()
 
 
 if __name__ == "__main__":
