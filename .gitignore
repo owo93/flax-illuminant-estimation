@@ -13,3 +13,5 @@ wheels/
 src/data/SimpleCube++
 
 .zed/
+wandb/
+checkpoints/

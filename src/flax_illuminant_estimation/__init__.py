@@ -1,38 +1,53 @@
+import pickle
+import uuid
+from pathlib import Path
+
 import jax
-import jax.numpy as jnp
 import optax
 from flax import nnx
 from tqdm import tqdm
 
+import wandb
+from flax_illuminant_estimation.eval import evaluate
 from flax_illuminant_estimation.model import ViT
+from flax_illuminant_estimation.train import train_step
+
+CHECKPOINT_DIR = Path("checkpoints")
+CHECKPOINT_DIR.mkdir(exist_ok=True)
 
 
-def normalize_illuminant(illum):
-    return illum / jnp.linalg.norm(illum, axis=-1, keepdims=True)
+def save_checkpoint(model, epoch, test_loss):
+    checkpoint = {
+        "model": nnx.state(model),
+        "epoch": epoch,
+        "test_loss": test_loss,
+    }
+    path = CHECKPOINT_DIR / f"checkpoint_epoch_{epoch:03d}.pkl"
+    with open(path, "wb") as f:
+        pickle.dump(checkpoint, f)
+    return path
 
 
-def angular_loss(pred, target):
-    return jnp.mean(jnp.arccos(jnp.clip(jnp.sum(pred * target, axis=-1), -1, 1)))
-
-
-def train_step(model, optimizer, rngs, batch_images, batch_illum):
-    def loss_fn(model):
-        pred = model(batch_images, train=True, rngs=rngs)
-        target = normalize_illuminant(batch_illum)
-        return angular_loss(pred, target)
-
-    loss, grads = nnx.value_and_grad(loss_fn)(model)
-    optimizer.update(grads)
-    return loss
-
-
-def evaluate(model, rngs, batch_images, batch_illum):
-    pred = model(batch_images, train=False, rngs=rngs if rngs else nnx.Rngs())
-    target = normalize_illuminant(batch_illum)
-    return angular_loss(pred, target)
+def load_checkpoint(path, model):
+    with open(path, "rb") as f:
+        checkpoint = pickle.load(f)
+    nnx.update(model, checkpoint["model"])
+    return checkpoint
 
 
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--wandb", action="store_true", help="Enable wandb logging")
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default="flax-illuminant-estimation",
+        help="Wandb project name",
+    )
+    args = parser.parse_args()
+
     from data.loader import SimpleCubePPDataset
 
     train_ds = SimpleCubePPDataset("train")
@@ -40,9 +55,27 @@ def main() -> None:
 
     rngs = nnx.Rngs(0)
     model = ViT(img_size=224, patch_size=16, dim=384, depth=6, num_heads=6, rngs=rngs)
-    optimizer = nnx.ModelAndOptimizer(model, optax.adamw(1e-4), wrt=nnx.Param)
+    optimizer = nnx.ModelAndOptimizer(model, optax.adamw(1e-5), wrt=nnx.Param)
 
     rng_key = jax.random.key(42)
+
+    config = {
+        "img_size": 224,
+        "patch_size": 16,
+        "dim": 384,
+        "depth": 6,
+        "num_heads": 6,
+        "batch_size": 32,
+        "lr": 1e-4,
+        "epochs": 10,
+    }
+
+    if args.wandb:
+        wandb.init(
+            project=args.wandb_project,
+            name=str(uuid.uuid4()),
+            config=config,
+        )
 
     print(f"Training on {jax.devices()}")
 
@@ -71,6 +104,20 @@ def main() -> None:
 
         test_loss /= num_test_batches
 
+        path = save_checkpoint(model, epoch + 1, test_loss)
+
+        if args.wandb:
+            wandb.log(
+                {
+                    "train_loss": train_loss,
+                    "test_loss": test_loss,
+                    "epoch": epoch + 1,
+                }
+            )
+
         tqdm.write(
-            f"Epoch {epoch + 1:>2}/10 | Train: {train_loss:.4f} | Test: {test_loss:.4f}"
+            f"Epoch {epoch + 1:>2}/10 | Train: {train_loss:.4f} | Test: {test_loss:.4f} | Saved: {path.name}"
         )
+
+    if args.wandb:
+        wandb.finish()
