@@ -1,10 +1,10 @@
-import pickle
 import sys
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from flax.training import checkpoints
 from PIL import Image
 
 from flax_illuminant_estimation.config import ModelConfig
@@ -30,13 +30,15 @@ def main(args):
     if not checkpoint_path.exists():
         print(f"Error: Checkpoint not found: {checkpoint_path}")
         print("Available checkpoints:")
-        for p in sorted(Path("checkpoints").glob("*.pkl")):
+        for p in sorted(Path("checkpoints").glob("checkpoint_*")):
             print(f"  {p}")
         return
 
     print(f"Loading checkpoint: {checkpoint_path}")
-    with open(checkpoint_path, "rb") as f:
-        checkpoint = pickle.load(f)
+    restored = checkpoints.restore_checkpoint(
+        ckpt_dir=str(checkpoint_path.resolve()), target=None
+    )
+    model_state = nnx.restore_int_paths(restored["model"])
 
     config = ModelConfig()
     model = ViT(
@@ -47,10 +49,10 @@ def main(args):
         num_heads=config.num_heads,
         rngs=nnx.Rngs(0),
     )
-    nnx.update(model, checkpoint["model"])
+    nnx.update(model, model_state)
 
     print(
-        f"Loaded model from epoch {checkpoint['epoch']} (test_loss: {checkpoint['test_loss']:.4f})"
+        f"Loaded model from epoch {restored['epoch']} (test_loss: {restored['test_loss']:.4f})"
     )
 
     print(f"\nEstimating illuminant for: {args.image}")

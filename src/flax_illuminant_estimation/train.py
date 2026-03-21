@@ -1,4 +1,3 @@
-import pickle
 import sys
 import uuid
 from dataclasses import asdict
@@ -9,6 +8,7 @@ import jax.numpy as jnp
 import optax
 import yaml
 from flax import nnx
+from flax.training import checkpoints
 from tqdm import tqdm
 
 import wandb
@@ -23,23 +23,46 @@ DTYPE_MAP = {
 }
 
 
-def save_checkpoint(model, epoch, test_loss, config: TrainerConfig):
-    checkpoint = {
-        "model": nnx.state(model),
-        "epoch": epoch,
-        "test_loss": test_loss,
+class TrainState:
+    def __init__(
+        self,
+        graphdef: nnx.GraphDef,
+        model_state: nnx.State,
+        epoch: int,
+        test_loss: float,
+    ):
+        self.graphdef = graphdef
+        self.model_state = model_state
+        self.epoch = epoch
+        self.test_loss = test_loss
+
+
+def save_checkpoint(train_state: TrainState, config: TrainerConfig):
+    ckpt = {
+        "graphdef": train_state.graphdef,
+        "model": nnx.to_pure_dict(train_state.model_state),
+        "epoch": train_state.epoch,
+        "test_loss": train_state.test_loss,
     }
-    path = config.checkpoint_dir / f"checkpoint_epoch_{epoch:03d}.pkl"
-    with open(path, "wb") as f:
-        pickle.dump(checkpoint, f)
-        return path
+    path = config.checkpoint_dir / f"checkpoint_{train_state.epoch:03d}"
+    checkpoints.save_checkpoint(
+        ckpt_dir=str(path.resolve()),
+        target=ckpt,
+        step=train_state.epoch,
+        overwrite=True,
+    )
+    return path
 
 
-def load_checkpoint(path, model):
-    with open(path, "rb") as f:
-        checkpoint = pickle.load(f)
-        nnx.update(model, checkpoint["model"])
-        return checkpoint
+def load_checkpoint(path, config: TrainerConfig) -> TrainState:
+    restored = checkpoints.restore_checkpoint(ckpt_dir=str(path.resolve()), target=None)
+    model_state = nnx.restore_int_paths(restored["model"])
+    return TrainState(
+        graphdef=restored["graphdef"],
+        model_state=model_state,  # pyright: ignore[reportArgumentType]
+        epoch=restored["epoch"],
+        test_loss=restored["test_loss"],
+    )
 
 
 def normalize_illuminant(illum):
@@ -68,8 +91,8 @@ def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
     loss, grads = nnx.value_and_grad(loss_fn)(model)
     if jnp.isnan(loss):
         grads = jax.tree.map(jnp.zeros_like, grads)
-        print("Warning: NaN loss detected, skipping gradient update")
-        optimizer.update(grads)
+        print("Warning: NaN loss detected, using zero grads")
+    optimizer.update(grads)
     return loss
 
 
@@ -102,30 +125,54 @@ def main(args):
     train_ds = SimpleCubePPDataset("train")
     test_ds = SimpleCubePPDataset("test")
 
-    rngs = nnx.Rngs(config.seed)
-    model = ViT(
-        img_size=config.img_size,
-        patch_size=config.patch_size,
-        dim=config.dim,
-        depth=config.depth,
-        num_heads=config.num_heads,
-        rngs=rngs,
-    )
-    optimizer = nnx.ModelAndOptimizer(
-        model, optax.adamw(config.learning_rate), wrt=nnx.Param
-    )
-
-    rng_key = jax.random.key(config.seed)
-
-    wandb.init(
-        project="flax-illuminant-estimation",
-        name=str(uuid.uuid4()),
-        config=config.to_dict(),
-    )
+    if args.resume:
+        print(f"Resuming from checkpoint: {args.resume}")
+        train_state = load_checkpoint(Path(args.resume), config)
+        rngs = nnx.Rngs(config.seed)
+        model = ViT(
+            img_size=config.img_size,
+            patch_size=config.patch_size,
+            dim=config.dim,
+            depth=config.depth,
+            num_heads=config.num_heads,
+            rngs=rngs,
+        )
+        nnx.update(model, train_state.model_state)
+        optimizer = nnx.ModelAndOptimizer(
+            model, optax.adamw(config.learning_rate), wrt=nnx.Param
+        )
+        start_epoch = train_state.epoch
+        rng_key = jax.random.key(config.seed)
+        wandb.init(
+            project="flax-illuminant-estimation",
+            name=str(uuid.uuid4()),
+            config=config.to_dict(),
+        )
+        print(f"Resumed from epoch {start_epoch}")
+    else:
+        rngs = nnx.Rngs(config.seed)
+        model = ViT(
+            img_size=config.img_size,
+            patch_size=config.patch_size,
+            dim=config.dim,
+            depth=config.depth,
+            num_heads=config.num_heads,
+            rngs=rngs,
+        )
+        optimizer = nnx.ModelAndOptimizer(
+            model, optax.adamw(config.learning_rate), wrt=nnx.Param
+        )
+        start_epoch = 0
+        rng_key = jax.random.key(config.seed)
+        wandb.init(
+            project="flax-illuminant-estimation",
+            name=str(uuid.uuid4()),
+            config=config.to_dict(),
+        )
 
     print(f"Training on {jax.devices()} | Precision: {config.precision} ({dtype})")
 
-    for epoch in range(config.epochs):
+    for epoch in range(start_epoch, config.epochs):
         train_loss = 0.0
         num_train_batches = 0
 
@@ -154,7 +201,14 @@ def main(args):
 
         test_loss /= num_test_batches
 
-        path = save_checkpoint(model, epoch + 1, test_loss, config)
+        graphdef, model_state = nnx.split(model)
+        train_state = TrainState(
+            graphdef=graphdef,
+            model_state=model_state,
+            epoch=epoch + 1,
+            test_loss=test_loss,
+        )
+        path = save_checkpoint(train_state, config)
 
         wandb.log(
             {
@@ -165,7 +219,7 @@ def main(args):
         )
 
         tqdm.write(
-            f"Epoch {epoch + 1:>2}/{config.epochs} | Train: {train_loss:.4f} | Test: {test_loss:.4f} | Saved: {path.name}"
+            f"Epoch {epoch + 1:>2}/{config.epochs} | Train: {train_loss:.4f} | Test: {test_loss:.4f} | Saved: {path}"
         )
 
     wandb.finish()

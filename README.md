@@ -17,10 +17,14 @@ src/
     └── infer.py         inference script
 ```
 
-## Commands
+## Usage
 To train model with given hyperparameters:
 ```bash
 uv run illum train --config <path_to_config>
+```
+or resume from a checkpoint:
+```bash
+uv run illum train --resume <path_to_checkpoint>
 ```
 
 To infer illuminant chromaticities on an image:
