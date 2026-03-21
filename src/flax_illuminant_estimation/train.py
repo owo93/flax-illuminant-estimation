@@ -1,10 +1,4 @@
-from data.loader import SimpleCubePPDataset
+from flax_illuminant_estimation import main
 
-train_ds = SimpleCubePPDataset("train")
-test_ds = SimpleCubePPDataset("test")
-
-for epoch in range(10):
-    for batch_images, batch_illum in train_ds.batches(32):
-        pass
-
-        print(batch_images.shape, batch_illum.shape)
+if __name__ == "__main__":
+    main()

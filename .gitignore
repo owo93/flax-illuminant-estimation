@@ -11,3 +11,5 @@ wheels/
 
 # Exclude local dataset
 src/data/SimpleCube++
+
+.zed/

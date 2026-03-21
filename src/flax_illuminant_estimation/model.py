@@ -17,7 +17,7 @@ class PatchEmbedding(nnx.Module):
             rngs=rngs,
         )
 
-        self.pos_embed = nnx.Param(jnp.zeros((1, self.num_patches, dim)), rngs=rngs)
+        self.pos_embed = nnx.Param(jnp.zeros((1, self.num_patches, dim)))
 
     def __call__(self, x):
         B = x.shape[0]
@@ -30,11 +30,11 @@ class PatchEmbedding(nnx.Module):
 
 
 class MLP(nnx.Module):
-    def __init__(self, dim, mlp_dim, droupout_rate, rngs) -> None:
+    def __init__(self, dim, mlp_dim, dropout_rate, rngs) -> None:
         self.fc1 = nnx.Linear(dim, mlp_dim, rngs=rngs)
         self.fc2 = nnx.Linear(mlp_dim, dim, rngs=rngs)
 
-        self.dropout = nnx.Dropout(droupout_rate)
+        self.dropout = nnx.Dropout(dropout_rate)
 
     def __call__(self, x, *, train, rngs):
         x = self.fc1(x)
@@ -101,7 +101,6 @@ class ViT(nnx.Module):
         dropout_rate=0.0,
         rngs: nnx.Rngs,
     ):
-
         self.patch_embed = PatchEmbedding(
             img_size=img_size, patch_size=patch_size, dim=dim, rngs=rngs
         )
@@ -122,7 +121,7 @@ class ViT(nnx.Module):
 
         x = self.norm(x)
 
-        feat = jnp.mean(x[:, 1:], axis=1)
+        feat = jnp.mean(x, axis=1)
 
         out = self.head(feat)
         out = out / jnp.linalg.norm(out, axis=-1, keepdims=True)
