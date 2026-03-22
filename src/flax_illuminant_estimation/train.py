@@ -1,5 +1,4 @@
 import sys
-import uuid
 from dataclasses import asdict
 from pathlib import Path
 
@@ -162,7 +161,6 @@ def main(args):
 
     with wandb.init(
         project="flax-illuminant-estimation",
-        name=str(uuid.uuid4()),
         config=config.to_dict(),
     ) as run:
         print(

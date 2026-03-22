@@ -15,3 +15,5 @@ src/data/SimpleCube++
 .zed/
 wandb/
 checkpoints/
+
+config.yaml
