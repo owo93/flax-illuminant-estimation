@@ -26,7 +26,7 @@ class SimpleCubePPDataset:
 
         with open(gt_path, "r", newline="") as f:
             reader = csv.DictReader(f)
-            for row in tqdm(reader, total=total_rows, desc=f"Loading {split} data"):
+            for row in tqdm(reader, total=total_rows, ncols=80, desc=f"Loading {split} data"):
                 filename = row["image"]
                 illum = jnp.array(
                     [row["mean_r"], row["mean_g"], row["mean_b"]], dtype=jnp.float32
@@ -54,7 +54,7 @@ class SimpleCubePPDataset:
 
         if shuffle:
             key = random.key(69)
-            random.permutation(key, len(self))
+            indices = random.permutation(key, indices)
 
         for start_idx in range(0, len(self), batch_size):
             batch_indices = indices[start_idx : start_idx + batch_size]

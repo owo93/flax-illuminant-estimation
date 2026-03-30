@@ -28,12 +28,10 @@ class TrainState:
         graphdef: nnx.GraphDef,
         model_state: nnx.State,
         epoch: int,
-        test_loss: float,
     ):
         self.graphdef = graphdef
         self.model_state = model_state
         self.epoch = epoch
-        self.test_loss = test_loss
 
 
 def save_checkpoint(train_state: TrainState, config: TrainerConfig):
@@ -41,7 +39,6 @@ def save_checkpoint(train_state: TrainState, config: TrainerConfig):
         "graphdef": train_state.graphdef,
         "model": nnx.to_pure_dict(train_state.model_state),
         "epoch": train_state.epoch,
-        "test_loss": train_state.test_loss,
     }
     path = config.checkpoint_dir / f"checkpoint_{train_state.epoch:03d}"
     checkpoints.save_checkpoint(
@@ -53,29 +50,30 @@ def save_checkpoint(train_state: TrainState, config: TrainerConfig):
     return path
 
 
-def load_checkpoint(path, config: TrainerConfig) -> TrainState:
+def load_checkpoint(path: Path) -> TrainState:
     restored = checkpoints.restore_checkpoint(ckpt_dir=str(path.resolve()), target=None)
     model_state = nnx.restore_int_paths(restored["model"])
     return TrainState(
         graphdef=restored["graphdef"],
-        model_state=model_state,  # pyright: ignore[reportArgumentType]
+        model_state=nnx.State(model_state),
         epoch=restored["epoch"],
-        test_loss=restored["test_loss"],
     )
 
 
-def normalize_illuminant(illum):
-    norm = jnp.linalg.norm(illum.astype(jnp.float32), axis=-1, keepdims=True)
-    norm = jnp.where(norm < 1e-8, 1.0, norm)
-    return (illum.astype(jnp.float32) / norm).astype(illum.dtype)
+def mse_loss(pred, target):
+    return jnp.mean((pred - target) ** 2)
 
 
-def angular_loss(pred, target):
-    pred_f32 = jnp.asarray(pred, dtype=jnp.float32)
-    target_f32 = jnp.asarray(target, dtype=jnp.float32)
-    cos_sim = jnp.sum(pred_f32 * target_f32, axis=-1)
-    cos_sim = jnp.clip(cos_sim, -1.0 + 1e-7, 1.0 - 1e-7)
-    return jnp.mean(jnp.arccos(cos_sim))
+def angular_error_deg(pred, target):
+    pred_norm = jnp.linalg.norm(pred, axis=-1, keepdims=True)
+    pred_norm = jnp.maximum(pred_norm, 1e-6)
+    target_norm = jnp.linalg.norm(target, axis=-1, keepdims=True)
+    target_norm = jnp.maximum(target_norm, 1e-6)
+    pred_unit = pred / pred_norm
+    target_unit = target / target_norm
+    cos_sim = jnp.sum(pred_unit * target_unit, axis=-1)
+    cos_sim = jnp.clip(cos_sim, -1.0, 1.0)
+    return jnp.mean(jnp.arccos(cos_sim)) * 180.0 / jnp.pi
 
 
 def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
@@ -83,9 +81,9 @@ def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
         images = batch_images.astype(dtype)
         illum = batch_illum.astype(dtype)
         pred = model(images, train=True, rngs=rngs)
-        target = normalize_illuminant(illum)
-        loss = angular_loss(pred, target)
-        return loss.astype(jnp.float32)
+        return mse_loss(pred.astype(jnp.float32), illum.astype(jnp.float32)).astype(
+            jnp.float32
+        )
 
     loss, grads = nnx.value_and_grad(loss_fn)(model)
     if jnp.isnan(loss):
@@ -95,10 +93,11 @@ def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
     return loss
 
 
-def evaluate(model, rngs, batch_images, batch_illum):
-    pred = model(batch_images, train=False, rngs=rngs if rngs else nnx.Rngs())
-    target = normalize_illuminant(batch_illum)
-    return angular_loss(pred, target)
+def evaluate(model, rngs, metrics, batch_images, batch_illum):
+    pred = model(batch_images, train=False, rngs=rngs)
+    loss = mse_loss(pred, batch_illum)
+    error = angular_error_deg(pred, batch_illum)
+    metrics.update(loss=loss, angular_error=error)
 
 
 def load_config(path) -> TrainerConfig:
@@ -109,6 +108,13 @@ def load_config(path) -> TrainerConfig:
     merge = {**config, **data}
     merge["checkpoint_dir"] = Path(merge["checkpoint_dir"])
     return TrainerConfig(**merge)
+
+
+def create_metrics() -> nnx.MultiMetric:
+    return nnx.MultiMetric(
+        loss=nnx.metrics.Average("loss"),
+        angular_error=nnx.metrics.Average("angular_error"),
+    )
 
 
 def main(args):
@@ -126,7 +132,7 @@ def main(args):
 
     if args.resume:
         print(f"Resuming from checkpoint: {args.resume}")
-        train_state = load_checkpoint(Path(args.resume), config)
+        train_state = load_checkpoint(Path(args.resume))
         rngs = nnx.Rngs(config.seed)
         model = ViT(
             img_size=config.img_size,
@@ -159,6 +165,9 @@ def main(args):
         start_epoch = 0
         rng_key = jax.random.key(config.seed)
 
+    train_metrics = create_metrics()
+    eval_metrics = create_metrics()
+
     with wandb.init(
         project="flax-illuminant-estimation",
         config=config.to_dict(),
@@ -166,10 +175,10 @@ def main(args):
         print(
             f"Training on {jax.devices()} | Precision: {run.config.precision} ({dtype})"
         )
+        print(f"Config: {config.to_dict()}")
 
         for epoch in range(start_epoch, run.config.epochs):
-            train_loss = 0.0
-            num_train_batches = 0
+            train_metrics.reset()
 
             pbar = tqdm(
                 train_ds.batches(run.config.batch_size),
@@ -181,45 +190,52 @@ def main(args):
                 rng_key, params_key, dropout_key = jax.random.split(rng_key, num=3)
                 rngs = nnx.Rngs(params=params_key, dropout=dropout_key)
                 loss = train_step(
-                    model, optimizer, rngs, batch_images, batch_illum, dtype
+                    model,
+                    optimizer,
+                    rngs,
+                    batch_images,
+                    batch_illum,
+                    dtype,
                 )
-                train_loss += float(loss)
-                num_train_batches += 1
-                pbar.set_postfix(loss=f"{loss:.4f}", refresh=True)
+                pred = model(batch_images, train=False, rngs=rngs)
+                error = angular_error_deg(pred, batch_illum)
+                train_metrics.update(loss=loss, angular_error=error)
+                m = train_metrics.compute()
+                pbar.set_postfix(loss=f"{m['loss']:.6f}", refresh=True)
 
-            train_loss /= num_train_batches
-
-            test_loss = 0.0
-            num_test_batches = 0
+            eval_metrics.reset()
             eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
             for batch_images, batch_illum in test_ds.batches(
                 run.config.batch_size, shuffle=False
             ):
-                loss = evaluate(model, eval_rngs, batch_images, batch_illum)
-                test_loss += float(loss)
-                num_test_batches += 1
+                evaluate(model, eval_rngs, eval_metrics, batch_images, batch_illum)
 
-            test_loss /= num_test_batches
+            train_m = train_metrics.compute()
+            eval_m = eval_metrics.compute()
 
             graphdef, model_state = nnx.split(model)
             train_state = TrainState(
                 graphdef=graphdef,
                 model_state=model_state,
                 epoch=epoch + 1,
-                test_loss=test_loss,
             )
             path = save_checkpoint(train_state, config)
 
             run.log(
                 {
-                    "train_loss": train_loss,
-                    "test_loss": test_loss,
+                    "train_loss": train_m["loss"],
+                    "train_angular_error": train_m["angular_error"],
+                    "eval_loss": eval_m["loss"],
+                    "eval_angular_error": eval_m["angular_error"],
                     "epoch": epoch + 1,
                 }
             )
 
             tqdm.write(
-                f"Epoch {epoch + 1:>2}/{run.config.epochs} | Train: {train_loss:.4f} | Test: {test_loss:.4f} | Saved: {path}"
+                f"Epoch {epoch + 1:>2}/{run.config.epochs} | "
+                f"Train: loss={train_m['loss']:.6f}, error={train_m['angular_error']:.2f}° | "
+                f"Eval: loss={eval_m['loss']:.6f}, error={eval_m['angular_error']:.2f}° | "
+                f"Saved: {path}"
             )
 
         run.finish()

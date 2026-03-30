@@ -28,11 +28,11 @@ class TrainerConfig:
     depth: int = 6
     num_heads: int = 6
     batch_size: int = 32
-    learning_rate: float = 1e-5
+    learning_rate: float = 1e-6
     epochs: int = 10
     seed: int = 42
     checkpoint_dir: Path = field(default_factory=lambda: Path("checkpoints"))
-    precision: str = "bfloat16"
+    precision: str = "float32"
 
     def __post_init__(self):
         self.checkpoint_dir.mkdir(exist_ok=True, parents=True)

@@ -51,20 +51,15 @@ def main(args):
     )
     nnx.update(model, model_state)
 
-    print(
-        f"Loaded model from epoch {restored['epoch']} (test_loss: {restored['test_loss']:.4f})"
-    )
+    print(f"Loaded model from epoch {restored['epoch']}")
 
     print(f"\nEstimating illuminant for: {args.image}")
     rngs = nnx.Rngs(dropout=jax.random.key(0))
     pred = estimate_illuminant(model, args.image, rngs)
 
-    pred_sum = pred.sum()
-    r, g, b = pred / pred_sum if pred_sum > 0 else (0.0, 0.0, 0.0)
-
-    if pred_sum > 0:
-        print(f"Chromaticity: [{r:.4f}, {g:.4f}, {b:.4f}]")
-        print(f"RGB: [{r * 255:.0f}, {g * 255:.0f}, {b * 255:.0f}]")
+    r, g, b = float(pred[0]), float(pred[1]), float(pred[2])
+    print(f"Chromaticity: {r:.4f}, {g:.4f}, {b:.4f}")
+    print(f"RGB: rgb({r * 255:.0f}, {g * 255:.0f}, {b * 255:.0f})")
 
 
 if __name__ == "__main__":
