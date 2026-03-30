@@ -28,13 +28,9 @@ class SimpleCubePPDataset:
             reader = csv.DictReader(f)
             for row in tqdm(reader, total=total_rows, ncols=80, desc=f"Loading {split} data"):
                 filename = row["image"]
-                illum = jnp.array(
-                    [row["mean_r"], row["mean_g"], row["mean_b"]], dtype=jnp.float32
-                )
+                illum = jnp.array([row["mean_r"], row["mean_g"], row["mean_b"]], dtype=jnp.float32)
 
-                samples.append(
-                    {"image_path": img_dir / f"{filename}.png", "illuminant": illum}
-                )
+                samples.append({"image_path": img_dir / f"{filename}.png", "illuminant": illum})
 
         return samples
 

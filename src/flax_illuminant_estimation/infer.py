@@ -35,9 +35,7 @@ def main(args):
         return
 
     print(f"Loading checkpoint: {checkpoint_path}")
-    restored = checkpoints.restore_checkpoint(
-        ckpt_dir=str(checkpoint_path.resolve()), target=None
-    )
+    restored = checkpoints.restore_checkpoint(ckpt_dir=str(checkpoint_path.resolve()), target=None)
     model_state = nnx.restore_int_paths(restored["model"])
 
     config = ModelConfig()

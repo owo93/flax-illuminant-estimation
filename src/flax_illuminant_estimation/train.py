@@ -81,9 +81,7 @@ def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
         images = batch_images.astype(dtype)
         illum = batch_illum.astype(dtype)
         pred = model(images, train=True, rngs=rngs)
-        return mse_loss(pred.astype(jnp.float32), illum.astype(jnp.float32)).astype(
-            jnp.float32
-        )
+        return mse_loss(pred.astype(jnp.float32), illum.astype(jnp.float32)).astype(jnp.float32)
 
     loss, grads = nnx.value_and_grad(loss_fn)(model)
     if jnp.isnan(loss):
@@ -143,9 +141,7 @@ def main(args):
             rngs=rngs,
         )
         nnx.update(model, train_state.model_state)
-        optimizer = nnx.ModelAndOptimizer(
-            model, optax.adamw(config.learning_rate), wrt=nnx.Param
-        )
+        optimizer = nnx.ModelAndOptimizer(model, optax.adamw(config.learning_rate), wrt=nnx.Param)
         start_epoch = train_state.epoch
         rng_key = jax.random.key(config.seed)
         print(f"Resumed from epoch {start_epoch}")
@@ -159,9 +155,7 @@ def main(args):
             num_heads=config.num_heads,
             rngs=rngs,
         )
-        optimizer = nnx.ModelAndOptimizer(
-            model, optax.adamw(config.learning_rate), wrt=nnx.Param
-        )
+        optimizer = nnx.ModelAndOptimizer(model, optax.adamw(config.learning_rate), wrt=nnx.Param)
         start_epoch = 0
         rng_key = jax.random.key(config.seed)
 
@@ -172,9 +166,7 @@ def main(args):
         project="flax-illuminant-estimation",
         config=config.to_dict(),
     ) as run:
-        print(
-            f"Training on {jax.devices()} | Precision: {run.config.precision} ({dtype})"
-        )
+        print(f"Training on {jax.devices()} | Precision: {run.config.precision} ({dtype})")
         print(f"Config: {config.to_dict()}")
 
         for epoch in range(start_epoch, run.config.epochs):
@@ -205,9 +197,7 @@ def main(args):
 
             eval_metrics.reset()
             eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
-            for batch_images, batch_illum in test_ds.batches(
-                run.config.batch_size, shuffle=False
-            ):
+            for batch_images, batch_illum in test_ds.batches(run.config.batch_size, shuffle=False):
                 evaluate(model, eval_rngs, eval_metrics, batch_images, batch_illum)
 
             train_m = train_metrics.compute()
