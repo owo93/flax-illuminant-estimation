@@ -64,16 +64,28 @@ def mse_loss(pred, target):
     return jnp.mean((pred - target) ** 2)
 
 
-def angular_error_deg(pred, target):
-    pred_norm = jnp.linalg.norm(pred, axis=-1, keepdims=True)
-    pred_norm = jnp.maximum(pred_norm, 1e-6)
-    target_norm = jnp.linalg.norm(target, axis=-1, keepdims=True)
-    target_norm = jnp.maximum(target_norm, 1e-6)
-    pred_unit = pred / pred_norm
-    target_unit = target / target_norm
-    cos_sim = jnp.sum(pred_unit * target_unit, axis=-1)
+def angular_error(pred, target):
+    pred_norm = pred / jnp.maximum(jnp.linalg.norm(pred, axis=-1, keepdims=True), 1e-6)
+    target_norm = target / jnp.maximum(jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-6)
+
+    cos_sim = jnp.sum(pred_norm * target_norm, axis=-1)
     cos_sim = jnp.clip(cos_sim, -1.0, 1.0)
-    return jnp.mean(jnp.arccos(cos_sim)) * 180.0 / jnp.pi
+    return jnp.degrees(jnp.arccos(cos_sim))
+
+
+def iec_metrics(errors):
+    n = len(errors)
+    sorted_e = jnp.sort(errors)
+    q1 = float(jnp.percentile(errors, 25))
+    q2 = float(jnp.percentile(errors, 50))
+    q3 = float(jnp.percentile(errors, 75))
+    return {
+        "mean": float(jnp.mean(errors)),
+        "median": q2,
+        "trimean": 0.25 * q1 + 0.5 * q2 + 0.25 * q3,
+        "best_25": float(jnp.mean(sorted_e[: n // 4])),
+        "worst_25": float(jnp.mean(sorted_e[n - n // 4 :])),
+    }
 
 
 def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
@@ -94,8 +106,11 @@ def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
 def evaluate(model, rngs, metrics, batch_images, batch_illum):
     pred = model(batch_images, train=False, rngs=rngs)
     loss = mse_loss(pred, batch_illum)
-    error = angular_error_deg(pred, batch_illum)
-    metrics.update(loss=loss, angular_error=error)
+    error = angular_error(pred, batch_illum)
+
+    metrics.update(loss=loss, angular_error=jnp.mean(error))
+
+    return error
 
 
 def load_config(path) -> TrainerConfig:
@@ -190,15 +205,21 @@ def main(args):
                     dtype,
                 )
                 pred = model(batch_images, train=False, rngs=rngs)
-                error = angular_error_deg(pred, batch_illum)
+                error = angular_error(pred, batch_illum)
                 train_metrics.update(loss=loss, angular_error=error)
                 m = train_metrics.compute()
                 pbar.set_postfix(loss=f"{m['loss']:.6f}", refresh=True)
 
             eval_metrics.reset()
             eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
+
+            all_errors = []
             for batch_images, batch_illum in test_ds.batches(run.config.batch_size, shuffle=False):
-                evaluate(model, eval_rngs, eval_metrics, batch_images, batch_illum)
+                errors = evaluate(model, eval_rngs, eval_metrics, batch_images, batch_illum)
+                all_errors.append(errors)
+
+            all_errors = jnp.concatenate(all_errors, axis=0)
+            iec = iec_metrics(all_errors)
 
             train_m = train_metrics.compute()
             eval_m = eval_metrics.compute()
@@ -216,7 +237,13 @@ def main(args):
                     "train_loss": train_m["loss"],
                     "train_angular_error": train_m["angular_error"],
                     "eval_loss": eval_m["loss"],
-                    "eval_angular_error": eval_m["angular_error"],
+                    "eval_angular_error": eval_m["angular_error"],  # same as IEC mean
+                    # IEC
+                    "mean": iec["mean"],
+                    "median": iec["median"],
+                    "trimean": iec["trimean"],
+                    "best_25": iec["best_25"],
+                    "worst_25": iec["worst_25"],
                     "epoch": epoch + 1,
                 }
             )
@@ -225,6 +252,7 @@ def main(args):
                 f"Epoch {epoch + 1:>2}/{run.config.epochs} | "
                 f"Train: loss={train_m['loss']:.6f}, error={train_m['angular_error']:.2f}° | "
                 f"Eval: loss={eval_m['loss']:.6f}, error={eval_m['angular_error']:.2f}° | "
+                f"Mean: {iec['mean']:.2f}°, Median: {iec['median']:.2f}°, Trimean: {iec['trimean']:.2f}°, "
                 f"Saved: {path}"
             )
 

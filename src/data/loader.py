@@ -40,7 +40,7 @@ class SimpleCubePPDataset:
     def __getitem__(self, idx):
         sample = self.samples[idx]
         img = Image.open(sample["image_path"]).convert("RGB")
-        img = img.resize((224, 224), Image.Resampling.BILINEAR)
+        img = img.resize((224, 224), Image.Resampling.LANCZOS)
         img = jnp.array(img, dtype=jnp.float32) / 255.0
 
         return jnp.array(img), sample["illuminant"]
