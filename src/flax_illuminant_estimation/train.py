@@ -15,10 +15,12 @@ from flax_illuminant_estimation.model import ViT
 __import__("dotenv").load_dotenv()
 
 
+@jax.jit
 def mse_loss(pred, target):
     return jnp.mean((pred - target) ** 2)
 
 
+@jax.jit
 def angular_error(pred, target):
     pred_norm = pred / jnp.maximum(jnp.linalg.norm(pred, axis=-1, keepdims=True), 1e-6)
     target_norm = target / jnp.maximum(jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-6)
@@ -55,14 +57,17 @@ def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
     if jnp.isnan(loss):
         grads = jax.tree.map(jnp.zeros_like, grads)
         print("Warning: NaN loss detected, using zero grads")
+
     optimizer.update(grads)
     return loss
 
 
+@nnx.jit
 def evaluate(model, rngs, metrics, batch_images, batch_illum):
     pred = model(batch_images, train=False, rngs=rngs)
     loss = mse_loss(pred, batch_illum)
     error = angular_error(pred, batch_illum)
+
     metrics.update(loss=loss, angular_error=jnp.mean(error))
     return error
 

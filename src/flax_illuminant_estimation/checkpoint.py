@@ -27,6 +27,7 @@ def save(state: CheckpointState, checkpoint_dir: Path):
         step=state.epoch,
         prefix="checkpoint_",
         overwrite=True,
+        keep=0,
     )
     return Path(path)
 

@@ -12,6 +12,7 @@ from flax_illuminant_estimation.config import ModelConfig
 from flax_illuminant_estimation.model import ViT
 
 
+@jax.jit
 def preprocess_image(path, size=224):
     img = Image.open(path).convert("RGB")
     img = img.resize((size, size), Image.Resampling.LANCZOS)
