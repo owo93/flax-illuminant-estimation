@@ -14,14 +14,11 @@ def main():
         help="path to checkpoint directory to resume from",
     )
 
-    infer_parser = subparser.add_parser("infer", help="<path_to_img> <checkpoint>")
+    infer_parser = subparser.add_parser("infer", help="run inference")
 
     infer_parser.add_argument("image", help="path to input image")
-    infer_parser.add_argument(
-        "--checkpoint",
-        default="checkpoints/checkpoint_010",
-        help="path to checkpoint directory",
-    )
+    infer_parser.add_argument("--checkpoint", help="path to checkpoint (defaults to latest)")
+    infer_parser.add_argument("--config", help="path to config file")
 
     args = parser.parse_args()
     if args.command == "train":

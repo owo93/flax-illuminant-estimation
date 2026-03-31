@@ -1,63 +1,18 @@
 import sys
-from dataclasses import asdict
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import optax
-import yaml
 from flax import nnx
-from flax.training import checkpoints
 from tqdm import tqdm
 
 import wandb
 from data.loader import SimpleCubePPDataset
+from flax_illuminant_estimation.checkpoint import CheckpointState, load, save
 from flax_illuminant_estimation.config import TrainerConfig
 from flax_illuminant_estimation.model import ViT
 
-DTYPE_MAP = {
-    "float16": jnp.float16,
-    "bfloat16": jnp.bfloat16,
-    "float32": jnp.float32,
-}
-
-
-class TrainState:
-    def __init__(
-        self,
-        graphdef: nnx.GraphDef,
-        model_state: nnx.State,
-        epoch: int,
-    ):
-        self.graphdef = graphdef
-        self.model_state = model_state
-        self.epoch = epoch
-
-
-def save_checkpoint(train_state: TrainState, config: TrainerConfig):
-    ckpt = {
-        "graphdef": train_state.graphdef,
-        "model": nnx.to_pure_dict(train_state.model_state),
-        "epoch": train_state.epoch,
-    }
-    path = config.checkpoint_dir / f"checkpoint_{train_state.epoch:03d}"
-    checkpoints.save_checkpoint(
-        ckpt_dir=str(path.resolve()),
-        target=ckpt,
-        step=train_state.epoch,
-        overwrite=True,
-    )
-    return path
-
-
-def load_checkpoint(path: Path) -> TrainState:
-    restored = checkpoints.restore_checkpoint(ckpt_dir=str(path.resolve()), target=None)
-    model_state = nnx.restore_int_paths(restored["model"])
-    return TrainState(
-        graphdef=restored["graphdef"],
-        model_state=nnx.State(model_state),
-        epoch=restored["epoch"],
-    )
+__import__("dotenv").load_dotenv()
 
 
 def mse_loss(pred, target):
@@ -67,10 +22,11 @@ def mse_loss(pred, target):
 def angular_error(pred, target):
     pred_norm = pred / jnp.maximum(jnp.linalg.norm(pred, axis=-1, keepdims=True), 1e-6)
     target_norm = target / jnp.maximum(jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-6)
-
     cos_sim = jnp.sum(pred_norm * target_norm, axis=-1)
     cos_sim = jnp.clip(cos_sim, -1.0, 1.0)
-    return jnp.degrees(jnp.arccos(cos_sim))
+
+    # jnp.degrees?
+    return jnp.arccos(cos_sim) * (180.0 / jnp.pi)
 
 
 def iec_metrics(errors):
@@ -107,20 +63,8 @@ def evaluate(model, rngs, metrics, batch_images, batch_illum):
     pred = model(batch_images, train=False, rngs=rngs)
     loss = mse_loss(pred, batch_illum)
     error = angular_error(pred, batch_illum)
-
     metrics.update(loss=loss, angular_error=jnp.mean(error))
-
     return error
-
-
-def load_config(path) -> TrainerConfig:
-    with open(path) as f:
-        data = yaml.safe_load(f) or {}
-
-    config = asdict(TrainerConfig())
-    merge = {**config, **data}
-    merge["checkpoint_dir"] = Path(merge["checkpoint_dir"])
-    return TrainerConfig(**merge)
 
 
 def create_metrics() -> nnx.MultiMetric:
@@ -132,20 +76,20 @@ def create_metrics() -> nnx.MultiMetric:
 
 def main(args):
     if args.config:
-        config = load_config(args.config)
+        config = TrainerConfig.from_yaml(args.config)
     else:
         config = TrainerConfig()
 
     jax.config.update("jax_default_matmul_precision", "high")
 
-    dtype = DTYPE_MAP.get(config.dtype, jnp.float32)
+    dtype = config.dtype
 
     train_ds = SimpleCubePPDataset("train")
     test_ds = SimpleCubePPDataset("test")
 
     if args.resume:
         print(f"Resuming from checkpoint: {args.resume}")
-        train_state = load_checkpoint(Path(args.resume))
+        state = load(args.resume)
         rngs = nnx.Rngs(config.seed)
         model = ViT(
             img_size=config.img_size,
@@ -155,9 +99,9 @@ def main(args):
             num_heads=config.num_heads,
             rngs=rngs,
         )
-        nnx.update(model, train_state.model_state)
+        nnx.update(model, state.model_state)
         optimizer = nnx.ModelAndOptimizer(model, optax.adamw(config.learning_rate), wrt=nnx.Param)
-        start_epoch = train_state.epoch
+        start_epoch = state.epoch
         rng_key = jax.random.key(config.seed)
         print(f"Resumed from epoch {start_epoch}")
     else:
@@ -177,68 +121,73 @@ def main(args):
     train_metrics = create_metrics()
     eval_metrics = create_metrics()
 
-    with wandb.init(
-        project="flax-illuminant-estimation",
-        config=config.to_dict(),
-    ) as run:
-        print(f"Training on {jax.devices()} | Precision: {run.config.precision} ({dtype})")
-        print(f"Config: {config.to_dict()}")
+    use_wandb = config.wandb
 
-        for epoch in range(start_epoch, run.config.epochs):
-            train_metrics.reset()
+    if use_wandb:
+        wandb.init(project="flax-illuminant-estimation", config=config.to_dict())
+        run_config = wandb.config
+    else:
+        run_config = config
 
-            pbar = tqdm(
-                train_ds.batches(run.config.batch_size),
-                desc="Train",
-                leave=False,
-                ncols=80,
+    print(f"Training on {jax.devices()} | Precision: {run_config.precision} ({dtype})")
+    print(f"Config: {config.to_dict()}")
+
+    for epoch in range(start_epoch, run_config.epochs):
+        train_metrics.reset()
+
+        pbar = tqdm(
+            train_ds.batches(run_config.batch_size),
+            desc="Train",
+            leave=False,
+            ncols=80,
+        )
+        for batch_images, batch_illum in pbar:
+            rng_key, params_key, dropout_key = jax.random.split(rng_key, num=3)
+            rngs = nnx.Rngs(params=params_key, dropout=dropout_key)
+            loss = train_step(
+                model,
+                optimizer,
+                rngs,
+                batch_images,
+                batch_illum,
+                dtype,
             )
-            for batch_images, batch_illum in pbar:
-                rng_key, params_key, dropout_key = jax.random.split(rng_key, num=3)
-                rngs = nnx.Rngs(params=params_key, dropout=dropout_key)
-                loss = train_step(
-                    model,
-                    optimizer,
-                    rngs,
-                    batch_images,
-                    batch_illum,
-                    dtype,
-                )
-                pred = model(batch_images, train=False, rngs=rngs)
-                error = angular_error(pred, batch_illum)
-                train_metrics.update(loss=loss, angular_error=error)
-                m = train_metrics.compute()
-                pbar.set_postfix(loss=f"{m['loss']:.6f}", refresh=True)
+            pred = model(batch_images, train=False, rngs=rngs)
+            error = angular_error(pred, batch_illum)
+            train_metrics.update(loss=loss, angular_error=error)
+            m = train_metrics.compute()
+            pbar.set_postfix(loss=f"{m['loss']:.6f}", refresh=True)
 
-            eval_metrics.reset()
-            eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
+        eval_metrics.reset()
+        eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
 
-            all_errors = []
-            for batch_images, batch_illum in test_ds.batches(run.config.batch_size, shuffle=False):
-                errors = evaluate(model, eval_rngs, eval_metrics, batch_images, batch_illum)
-                all_errors.append(errors)
+        all_errors = []
+        for batch_images, batch_illum in test_ds.batches(run_config.batch_size, shuffle=False):
+            errors = evaluate(model, eval_rngs, eval_metrics, batch_images, batch_illum)
+            all_errors.append(errors)
 
-            all_errors = jnp.concatenate(all_errors, axis=0)
-            iec = iec_metrics(all_errors)
+        all_errors = jnp.concatenate(all_errors, axis=0)
+        iec = iec_metrics(all_errors)
 
-            train_m = train_metrics.compute()
-            eval_m = eval_metrics.compute()
+        train_m = train_metrics.compute()
+        eval_m = eval_metrics.compute()
 
-            graphdef, model_state = nnx.split(model)
-            train_state = TrainState(
-                graphdef=graphdef,
-                model_state=model_state,
-                epoch=epoch + 1,
-            )
-            path = save_checkpoint(train_state, config)
+        graphdef, model_state = nnx.split(model)
+        state = CheckpointState(
+            graphdef=graphdef,
+            model_state=model_state,
+            epoch=epoch + 1,
+            config=config.to_dict(),
+        )
+        checkpoint_path = save(state, config.checkpoint_dir)
 
-            run.log(
+        if use_wandb:
+            wandb.log(
                 {
                     "train_loss": train_m["loss"],
                     "train_angular_error": train_m["angular_error"],
                     "eval_loss": eval_m["loss"],
-                    "eval_angular_error": eval_m["angular_error"],  # same as IEC mean
-                    # IEC
+                    "eval_angular_error": eval_m["angular_error"],
                     "mean": iec["mean"],
                     "median": iec["median"],
                     "trimean": iec["trimean"],
@@ -248,15 +197,16 @@ def main(args):
                 }
             )
 
-            tqdm.write(
-                f"Epoch {epoch + 1:>2}/{run.config.epochs} | "
-                f"Train: loss={train_m['loss']:.6f}, error={train_m['angular_error']:.2f}° | "
-                f"Eval: loss={eval_m['loss']:.6f}, error={eval_m['angular_error']:.2f}° | "
-                f"Mean: {iec['mean']:.2f}°, Median: {iec['median']:.2f}°, Trimean: {iec['trimean']:.2f}°, "
-                f"Saved: {path}"
-            )
+        tqdm.write(
+            f"Epoch {epoch + 1:>2}/{run_config.epochs} | "
+            f"Train: loss={train_m['loss']:.6f}, error={train_m['angular_error']:.2f}° | "
+            f"Eval: loss={eval_m['loss']:.6f}, error={eval_m['angular_error']:.2f}° | "
+            f"Mean: {iec['mean']:.2f}°, Median: {iec['median']:.2f}°, Trimean: {iec['trimean']:.2f}°, "
+            f"Saved: {checkpoint_path}"
+        )
 
-        run.finish()
+    if use_wandb:
+        wandb.finish()
 
 
 if __name__ == "__main__":

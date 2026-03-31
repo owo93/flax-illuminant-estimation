@@ -1,27 +1,18 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+import jax.numpy as jnp
+import yaml
 
-@dataclass
-class ModelConfig:
-    img_size: int = 224
-    patch_size: int = 16
-    dim: int = 384
-    depth: int = 6
-    num_heads: int = 6
-
-    def to_dict(self):
-        return {
-            "img_size": self.img_size,
-            "patch_size": self.patch_size,
-            "dim": self.dim,
-            "depth": self.depth,
-            "num_heads": self.num_heads,
-        }
+DTYPE_MAP = {
+    "float16": jnp.float16,
+    "bfloat16": jnp.bfloat16,
+    "float32": jnp.float32,
+}
 
 
 @dataclass
-class TrainerConfig:
+class BaseConfig:
     img_size: int = 224
     patch_size: int = 16
     dim: int = 384
@@ -33,27 +24,41 @@ class TrainerConfig:
     seed: int = 42
     checkpoint_dir: Path = field(default_factory=lambda: Path("checkpoints"))
     precision: str = "float32"
+    wandb: bool = False
 
-    def __post_init__(self):
-        self.checkpoint_dir.mkdir(exist_ok=True, parents=True)
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "BaseConfig":
+        with open(path, "r") as f:
+            config_dict = yaml.safe_load(f) or {}
+
+        valid_fields = {f.name for f in fields(cls)}
+        filtered = {k: v for k, v in config_dict.items() if k in valid_fields}
+
+        if "checkpoint_dir" in filtered and not isinstance(filtered["checkpoint_dir"], Path):
+            filtered["checkpoint_dir"] = Path(filtered["checkpoint_dir"])
+
+        return cls(**filtered)
+
+    def to_dict(self) -> dict:
+        d = asdict(self)
+        for k, v in d.items():
+            if isinstance(v, Path):
+                d[k] = str(v)
+        return d
 
     @property
     def dtype(self):
-        if self.precision == "float16":
-            return "float16"
-        elif self.precision == "bfloat16":
-            return "bfloat16"
-        return "float32"
+        return DTYPE_MAP.get(self.precision, jnp.float32)
 
-    def to_dict(self):
-        return {
-            "img_size": self.img_size,
-            "patch_size": self.patch_size,
-            "dim": self.dim,
-            "depth": self.depth,
-            "num_heads": self.num_heads,
-            "batch_size": self.batch_size,
-            "learning_rate": self.learning_rate,
-            "epochs": self.epochs,
-            "precision": self.precision,
-        }
+
+@dataclass
+class ModelConfig(BaseConfig):
+    pass
+
+
+@dataclass
+class TrainerConfig(BaseConfig):
+    def __post_init__(self):
+        if isinstance(self.checkpoint_dir, str):
+            self.checkpoint_dir = Path(self.checkpoint_dir)
+        self.checkpoint_dir.mkdir(exist_ok=True, parents=True)
