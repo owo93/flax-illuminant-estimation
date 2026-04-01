@@ -101,7 +101,9 @@ class ViT(nnx.Module):
         dropout_rate=0.0,
         rngs: nnx.Rngs,
     ):
-        self.patch_embed = PatchEmbedding(img_size=img_size, patch_size=patch_size, dim=dim, rngs=rngs)
+        self.patch_embed = PatchEmbedding(
+            img_size=img_size, patch_size=patch_size, dim=dim, rngs=rngs
+        )
 
         self.blocks = [Encoder(dim, num_heads, mlp_ratio, dropout_rate, rngs) for _ in range(depth)]
 

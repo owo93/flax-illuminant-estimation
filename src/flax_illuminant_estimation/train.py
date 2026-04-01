@@ -20,19 +20,34 @@ __import__("dotenv").load_dotenv()
 
 
 @jax.jit
-def mse_loss(pred, target):
-    return jnp.mean((pred - target) ** 2)
+def angular_loss(pred, target):
+    cos_sim = jnp.sum(pred * target, axis=-1) / (
+        jnp.linalg.norm(pred, axis=-1) * jnp.linalg.norm(target, axis=-1) + 1e-8
+    )
+    return jnp.arccos(jnp.clip(cos_sim, -1.0, 1.0))
 
 
-@jax.jit
-def angular_error(pred, target):
-    pred_norm = pred / jnp.maximum(jnp.linalg.norm(pred, axis=-1, keepdims=True), 1e-6)
-    target_norm = target / jnp.maximum(jnp.linalg.norm(target, axis=-1, keepdims=True), 1e-6)
-    cos_sim = jnp.sum(pred_norm * target_norm, axis=-1)
-    cos_sim = jnp.clip(cos_sim, -1.0, 1.0)
+def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
+    def loss_fn(model):
+        images = batch_images.astype(dtype)
+        illum = batch_illum.astype(dtype)
+        pred = model(images, train=True, rngs=rngs)
+        loss = angular_loss(pred.astype(jnp.float32), illum.astype(jnp.float32))
 
-    # jnp.degrees?
-    return jnp.arccos(cos_sim) * (180.0 / jnp.pi)
+        return jnp.mean(loss)
+
+    loss, grads = nnx.value_and_grad(loss_fn)(model)
+    grads = jax.tree.map(lambda g: jnp.where(jnp.isnan(g), jnp.zeros_like(g), g), grads)
+
+    optimizer.update(grads)
+    return loss
+
+
+@nnx.jit
+def evaluate(model, rngs, batch_images, batch_illum):
+    pred = model(batch_images, train=False, rngs=rngs)
+    errors = angular_loss(pred, batch_illum)
+    return jnp.degrees(errors)
 
 
 def iec_metrics(errors):
@@ -51,34 +66,9 @@ def iec_metrics(errors):
     }
 
 
-def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
-    def loss_fn(model):
-        images = batch_images.astype(dtype)
-        illum = batch_illum.astype(dtype)
-        pred = model(images, train=True, rngs=rngs)
-        return mse_loss(pred.astype(jnp.float32), illum.astype(jnp.float32)).astype(jnp.float32)
-
-    loss, grads = nnx.value_and_grad(loss_fn)(model)
-    grads = jax.tree.map(lambda g: jnp.where(jnp.isnan(g), jnp.zeros_like(g), g), grads)
-
-    optimizer.update(grads)
-    return loss
-
-
-@nnx.jit
-def evaluate(model, rngs, metrics, batch_images, batch_illum):
-    pred = model(batch_images, train=False, rngs=rngs)
-    loss = mse_loss(pred, batch_illum)
-    error = angular_error(pred, batch_illum)
-
-    metrics.update(loss=loss, angular_error=jnp.mean(error))
-    return error
-
-
 def create_metrics() -> nnx.MultiMetric:
     return nnx.MultiMetric(
         loss=nnx.metrics.Average("loss"),
-        angular_error=nnx.metrics.Average("angular_error"),
     )
 
 
@@ -132,8 +122,6 @@ def main(args):
         start_epoch = 0
 
     train_metrics = create_metrics()
-    eval_metrics = create_metrics()
-
     use_wandb: bool = config.trainer.wandb
 
     if use_wandb:
@@ -144,23 +132,21 @@ def main(args):
     )
     pprint(config.to_dict(), expand_all=True, indent_guides=False)
 
-    def create_table():
-        table = Table(title="Training Progress", expand=True, width=100)
-        for col in [
+    console = Console()
+    table = Table(title="Training Progress", expand=True, width=100)
+    [
+        table.add_column(x)
+        for x in [
             "epoch",
-            "train loss",
-            "eval loss",
-            "train err",
-            "eval err",
+            "train",
             "mean",
             "median",
             "trimean",
-        ]:
-            table.add_column(col)
-        return table
-
-    console = Console()
-    table = create_table()
+            "best 25%",
+            "worst 25%",
+            "worst",
+        ]
+    ]
     progress = Progress(
         TimeElapsedColumn(),
         TextColumn("{task.description}"),
@@ -168,7 +154,7 @@ def main(args):
         TimeRemainingColumn(),
         console=console,
     )
-    task = progress.add_task("Train", total=start_epoch + config.trainer.epochs)
+    task = progress.add_task("Train", total=steps_per_epoch)
 
     with Live(Group(table, progress), console=console, refresh_per_second=4):
         for epoch in range(start_epoch, config.trainer.epochs):
@@ -177,13 +163,6 @@ def main(args):
             progress.update(
                 task, description=f"epoch {epoch + 1}/{config.trainer.epochs}: training..."
             )
-
-            # pbar = tqdm(
-            #     train_ds.batches(config.trainer.batch_size),
-            #     desc="Train",
-            #     leave=False,
-            #     ncols=80,
-            # )
 
             # Train
             for batch_images, batch_illum in train_ds.batches(config.trainer.batch_size):
@@ -197,19 +176,16 @@ def main(args):
                     batch_illum,
                     config.trainer.dtype,
                 )
-                pred = model(batch_images, train=False, rngs=rngs)
-                error = angular_error(pred, batch_illum)
-                train_metrics.update(loss=loss, angular_error=error)
+
+                train_metrics.update(loss=loss, angular_error=jnp.degrees(loss))
                 m = train_metrics.compute()
                 progress.update(
                     task,
                     advance=1,
-                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss {m['loss']:.7f}",
+                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss {m['loss']:.7f} \u2192 {jnp.degrees(m['loss']):.3f}\xb0",
                 )
-                # pbar.set_postfix(loss=f"{m['loss']:.6f}", refresh=True)
 
             # Eval
-            eval_metrics.reset()
             eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
 
             all_errors = []
@@ -217,14 +193,13 @@ def main(args):
             for batch_images, batch_illum in test_ds.batches(
                 config.trainer.batch_size, shuffle=False
             ):
-                errors = evaluate(model, eval_rngs, eval_metrics, batch_images, batch_illum)
+                errors = evaluate(model, eval_rngs, batch_images, batch_illum)
                 all_errors.append(errors)
 
             all_errors = jnp.concatenate(all_errors, axis=0)
             iec = iec_metrics(all_errors)
 
             train_m = train_metrics.compute()
-            eval_m = eval_metrics.compute()
 
             graphdef, model_state = nnx.split(model)
             state = CheckpointState(
@@ -238,37 +213,28 @@ def main(args):
             if use_wandb:
                 wandb.log(
                     {
-                        "train_loss": train_m["loss"],
-                        "train_angular_error": train_m["angular_error"],
-                        "eval_loss": eval_m["loss"],
-                        "eval_angular_error": eval_m["angular_error"],
-                        "mean": iec["mean"],
-                        "median": iec["median"],
-                        "trimean": iec["trimean"],
-                        "best_25": iec["best_25"],
-                        "worst_25": iec["worst_25"],
-                        "worst": iec["worst"],
+                        "train/loss": float(train_m["loss"]),
+                        "train/loss_deg": float(jnp.degrees(train_m["loss"])),
+                        "iec/mean": iec["mean"],
+                        "iec/median": iec["median"],
+                        "iec/trimean": iec["trimean"],
+                        "iec/best_25": iec["best_25"],
+                        "iec/worst_25": iec["worst_25"],
+                        "iec/worst": iec["worst"],
                         "epoch": epoch + 1,
                     }
                 )
+
             table.add_row(
-                str(epoch + 1),
-                f"{train_m['loss']:.7f}",
-                f"{eval_m['loss']:.7f}",
-                f"{train_m['angular_error']:.2f}\xb0",
-                f"{eval_m['angular_error']:.2f}\xb0",
+                str(epoch + 1).zfill(2),
+                f"{train_m['loss']:.3f} \u2192 {jnp.degrees(train_m['loss']):.3f}\xb0",
                 f"{iec['mean']:.2f}\xb0",
                 f"{iec['median']:.2f}\xb0",
                 f"{iec['trimean']:.2f}\xb0",
+                f"{iec['best_25']:.2f}\xb0",
+                f"{iec['worst_25']:.2f}\xb0",
+                f"{iec['worst']:.2f}\xb0",
             )
-
-            # tqdm.write(f"""
-            # Epoch {epoch + 1:>2}/{config.trainer.epochs}
-            #     Train | loss: {train_m["loss"]:.6f} error: {train_m["angular_error"]:.2f}\xb0
-            #     Eval  | loss={eval_m["loss"]:.6f} error: {eval_m["angular_error"]:.2f}\xb0
-            #     IEC   | mean: {iec["mean"]:.2f}\xb0 median: {iec["median"]:.2f}\xb0 trimean: {iec["trimean"]:.2f}\xb0
-            #     Saved {saved_to}
-            # """)
 
         if use_wandb:
             wandb.finish()
