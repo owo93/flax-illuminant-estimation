@@ -2,16 +2,47 @@
 import csv
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
-from jax import random
+from jax import lax, random
 from PIL import Image
 from tqdm import tqdm
 
 
+@jax.jit
+def augment(img, key):
+    k1, k2, k3 = random.split(key, 3)
+    # flip horizontal
+    img = jnp.where(random.bernoulli(k1), jnp.flip(img, axis=1), img)
+
+    # rotate
+    k = random.randint(k2, shape=(), minval=0, maxval=4)
+    img = lax.switch(
+        k,
+        [
+            lambda x: x,
+            lambda x: jnp.rot90(x, k=1, axes=(0, 1)),
+            lambda x: jnp.rot90(x, k=2, axes=(0, 1)),
+            lambda x: jnp.rot90(x, k=3, axes=(0, 1)),
+        ],
+        img,
+    )
+
+    # flip vertical
+    img = jnp.where(random.bernoulli(k3), jnp.flip(img, axis=0), img)
+
+    return img
+
+
+batched_augment = jax.jit(jax.vmap(augment, in_axes=(0, 0)))
+
+
 class SimpleCubePPDataset:
-    def __init__(self, split, root=None):
+    def __init__(self, split, root=None, seed=42):
         self.root = Path(__file__).parent / "SimpleCube++"
         self.split = split
+        self.augment = split == "train"
+        self.key = random.key(seed)
         self.samples = self._load_split(split)
 
     def _load_split(self, split):
@@ -46,22 +77,27 @@ class SimpleCubePPDataset:
         return jnp.array(img), sample["illuminant"]
 
     def batches(self, batch_size, shuffle=True):
-        indices = jnp.arange(len(self))
+        self.key, shuffle_key, augment_key = random.split(self.key, 3)
 
+        indices = jnp.arange(len(self))
         if shuffle:
-            key = random.key(69)
-            indices = random.permutation(key, indices)
+            indices = random.permutation(shuffle_key, indices)
 
         for start_idx in range(0, len(self), batch_size):
             batch_indices = indices[start_idx : start_idx + batch_size]
+            if len(batch_indices) < batch_size:
+                continue
 
-            images = []
-            illuminants = []
-
+            images, illuminants = [], []
             for idx in batch_indices:
-                img, illum = self[idx]
+                img, illum = self[int(idx)]
                 images.append(img)
                 illuminants.append(illum)
 
-            if len(images) == batch_size:
-                yield jnp.stack(images), jnp.stack(illuminants)
+            images = jnp.stack(images)
+
+            if self.augment:
+                batch_keys = random.split(augment_key, batch_size)
+                images = batched_augment(images, batch_keys)
+
+            yield images, jnp.stack(illuminants)
