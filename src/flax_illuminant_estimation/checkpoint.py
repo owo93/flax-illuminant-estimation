@@ -32,23 +32,29 @@ def save(state: CheckpointState, checkpoint_dir: Path):
     return Path(path)
 
 
-def load(checkpoint_dir: Path) -> CheckpointState:
-    restored = checkpoints.restore_checkpoint(ckpt_dir=str(checkpoint_dir.resolve()), target=None)
+def load(path: Path) -> CheckpointState:
+    path = path.resolve()
+    restored = checkpoints.restore_checkpoint(ckpt_dir=str(path), target=None)
     model_state = nnx.restore_int_paths(restored["model"])
     return CheckpointState(
         graphdef=restored["graphdef"],
         model_state=nnx.State(model_state),
-        epoch=restored["epoch"],
+        epoch=int(restored["epoch"]),
         config=restored.get("config", {}),
     )
 
 
-def list(checkpoint_dir: Path):
+def list_checkpoints(checkpoint_dir: Path):
     if not checkpoint_dir.exists():
         return []
-    return sorted(checkpoint_dir.glob("checkpoint_*"))
+
+    paths = []
+    for p in checkpoint_dir.glob("checkpoint_*"):
+        paths.append(p)
+
+    return [p for _, p in sorted(paths, key=lambda x: int(x.stem.split("_")[-1]))]
 
 
 def latest(checkpoint_dir: Path) -> Path | None:
-    found = list(checkpoint_dir)
+    found = list_checkpoints(checkpoint_dir)
     return found[-1] if found else None

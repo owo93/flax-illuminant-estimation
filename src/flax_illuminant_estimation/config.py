@@ -1,8 +1,11 @@
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+from typing import Literal
 
 import jax.numpy as jnp
 import yaml
+from jax.extend.mlir.dialects.chlo import BesselI1eOp
+from wandb.apis.public.runs import _server_provides_internal_id_for_project
 
 DTYPE_MAP = {
     "float16": jnp.float16,
@@ -12,39 +15,28 @@ DTYPE_MAP = {
 
 
 @dataclass
-class BaseConfig:
+class ModelConfig:
     img_size: int = 224
     patch_size: int = 16
     dim: int = 384
     depth: int = 6
     num_heads: int = 6
+
+
+@dataclass
+class TrainerConfig:
     batch_size: int = 32
-    learning_rate: float = 1e-6
+    learning_rate: float = 1e-4
     epochs: int = 10
     seed: int = 42
     checkpoint_dir: Path = field(default_factory=lambda: Path("checkpoints"))
-    precision: str = "float32"
+    precision: Literal["float16", "bfloat16", "float32"] = "float32"
     wandb: bool = False
 
-    @classmethod
-    def from_yaml(cls, path: str | Path) -> "BaseConfig":
-        with open(path, "r") as f:
-            config_dict = yaml.safe_load(f) or {}
-
-        valid_fields = {f.name for f in fields(cls)}
-        filtered = {k: v for k, v in config_dict.items() if k in valid_fields}
-
-        if "checkpoint_dir" in filtered and not isinstance(filtered["checkpoint_dir"], Path):
-            filtered["checkpoint_dir"] = Path(filtered["checkpoint_dir"])
-
-        return cls(**filtered)
-
-    def to_dict(self) -> dict:
-        d = asdict(self)
-        for k, v in d.items():
-            if isinstance(v, Path):
-                d[k] = str(v)
-        return d
+    def __post_init__(self):
+        if not isinstance(self.checkpoint_dir, Path):
+            self.checkpoint_dir = Path(self.checkpoint_dir)
+        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def dtype(self):
@@ -52,13 +44,22 @@ class BaseConfig:
 
 
 @dataclass
-class ModelConfig(BaseConfig):
-    pass
+class Config:
+    model: ModelConfig = field(default_factory=ModelConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
 
+    @classmethod
+    def from_yaml(cls, path: str | Path) -> "Config":
+        with open(path, "r") as f:
+            raw = yaml.safe_load(f) or {}
 
-@dataclass
-class TrainerConfig(BaseConfig):
-    def __post_init__(self):
-        if isinstance(self.checkpoint_dir, str):
-            self.checkpoint_dir = Path(self.checkpoint_dir)
-        self.checkpoint_dir.mkdir(exist_ok=True, parents=True)
+        model_d = raw.get("model", {})
+        trainer_d = raw.get("trainer", {})
+
+        return cls(model=ModelConfig(**model_d), trainer=TrainerConfig(**trainer_d))
+
+    def to_dict(self):
+        return {
+            "model": {k: v for k, v in asdict(self.model).items()},
+            "trainer": {k: v for k, v in asdict(self.trainer).items()},
+        }
