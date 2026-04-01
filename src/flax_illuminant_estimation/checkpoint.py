@@ -52,7 +52,9 @@ def list_checkpoints(checkpoint_dir: Path):
     for p in checkpoint_dir.glob("checkpoint_*"):
         paths.append(p)
 
-    return [p for _, p in sorted(paths, key=lambda x: int(x.stem.split("_")[-1]))]
+    paths = sorted(paths)
+
+    return paths
 
 
 def latest(checkpoint_dir: Path) -> Path | None:

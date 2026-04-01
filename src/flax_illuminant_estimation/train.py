@@ -4,8 +4,11 @@ import jax
 import jax.numpy as jnp
 import optax
 from flax import nnx
+from rich.console import Console, Group
+from rich.live import Live
 from rich.pretty import pprint
-from tqdm import tqdm
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.table import Table
 
 import wandb
 from data.loader import SimpleCubePPDataset
@@ -141,90 +144,134 @@ def main(args):
     )
     pprint(config.to_dict(), expand_all=True, indent_guides=False)
 
-    for epoch in range(start_epoch, config.trainer.epochs):
-        train_metrics.reset()
+    def create_table():
+        table = Table(title="Training Progress", expand=True, width=100)
+        for col in [
+            "epoch",
+            "train loss",
+            "eval loss",
+            "train err",
+            "eval err",
+            "mean",
+            "median",
+            "trimean",
+        ]:
+            table.add_column(col)
+        return table
 
-        pbar = tqdm(
-            train_ds.batches(config.trainer.batch_size),
-            desc="Train",
-            leave=False,
-            ncols=80,
-        )
+    console = Console()
+    table = create_table()
+    progress = Progress(
+        TimeElapsedColumn(),
+        TextColumn("{task.description}"),
+        BarColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    )
+    task = progress.add_task("Train", total=start_epoch + config.trainer.epochs)
 
-        # Train
-        for batch_images, batch_illum in pbar:
-            params_key, dropout_key = jax.random.split(rng_key, num=2)
-            rngs = nnx.Rngs(params=params_key, dropout=dropout_key)
-            loss = train_step(
-                model,
-                optimizer,
-                rngs,
-                batch_images,
-                batch_illum,
-                config.trainer.dtype,
+    with Live(Group(table, progress), console=console, refresh_per_second=4):
+        for epoch in range(start_epoch, config.trainer.epochs):
+            train_metrics.reset()
+            progress.reset(task)
+            progress.update(
+                task, description=f"epoch {epoch + 1}/{config.trainer.epochs}: training..."
             )
-            pred = model(batch_images, train=False, rngs=rngs)
-            error = angular_error(pred, batch_illum)
-            train_metrics.update(loss=loss, angular_error=error)
-            m = train_metrics.compute()
-            pbar.set_postfix(loss=f"{m['loss']:.6f}", refresh=True)
 
-        # Eval
-        eval_metrics.reset()
-        eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
+            # pbar = tqdm(
+            #     train_ds.batches(config.trainer.batch_size),
+            #     desc="Train",
+            #     leave=False,
+            #     ncols=80,
+            # )
 
-        all_errors = []
+            # Train
+            for batch_images, batch_illum in train_ds.batches(config.trainer.batch_size):
+                rng_key, params_key, dropout_key = jax.random.split(rng_key, num=3)
+                rngs = nnx.Rngs(params=params_key, dropout=dropout_key)
+                loss = train_step(
+                    model,
+                    optimizer,
+                    rngs,
+                    batch_images,
+                    batch_illum,
+                    config.trainer.dtype,
+                )
+                pred = model(batch_images, train=False, rngs=rngs)
+                error = angular_error(pred, batch_illum)
+                train_metrics.update(loss=loss, angular_error=error)
+                m = train_metrics.compute()
+                progress.update(
+                    task,
+                    advance=1,
+                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss {m['loss']:.7f}",
+                )
+                # pbar.set_postfix(loss=f"{m['loss']:.6f}", refresh=True)
 
-        for batch_images, batch_illum in test_ds.batches(config.trainer.batch_size, shuffle=False):
-            errors = evaluate(model, eval_rngs, eval_metrics, batch_images, batch_illum)
-            all_errors.append(errors)
+            # Eval
+            eval_metrics.reset()
+            eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
 
-        all_errors = jnp.concatenate(all_errors, axis=0)
-        iec = iec_metrics(all_errors)
+            all_errors = []
 
-        train_m = train_metrics.compute()
-        eval_m = eval_metrics.compute()
+            for batch_images, batch_illum in test_ds.batches(
+                config.trainer.batch_size, shuffle=False
+            ):
+                errors = evaluate(model, eval_rngs, eval_metrics, batch_images, batch_illum)
+                all_errors.append(errors)
 
-        graphdef, model_state = nnx.split(model)
-        state = CheckpointState(
-            graphdef=graphdef,
-            model_state=model_state,
-            epoch=epoch + 1,
-            config=config.to_dict(),
-        )
-        saved_to = save(state, config.trainer.checkpoint_dir)
+            all_errors = jnp.concatenate(all_errors, axis=0)
+            iec = iec_metrics(all_errors)
+
+            train_m = train_metrics.compute()
+            eval_m = eval_metrics.compute()
+
+            graphdef, model_state = nnx.split(model)
+            state = CheckpointState(
+                graphdef=graphdef,
+                model_state=model_state,
+                epoch=epoch + 1,
+                config=config.to_dict(),
+            )
+            save(state, config.trainer.checkpoint_dir)
+
+            if use_wandb:
+                wandb.log(
+                    {
+                        "train_loss": train_m["loss"],
+                        "train_angular_error": train_m["angular_error"],
+                        "eval_loss": eval_m["loss"],
+                        "eval_angular_error": eval_m["angular_error"],
+                        "mean": iec["mean"],
+                        "median": iec["median"],
+                        "trimean": iec["trimean"],
+                        "best_25": iec["best_25"],
+                        "worst_25": iec["worst_25"],
+                        "worst": iec["worst"],
+                        "epoch": epoch + 1,
+                    }
+                )
+            table.add_row(
+                str(epoch + 1),
+                f"{train_m['loss']:.7f}",
+                f"{eval_m['loss']:.7f}",
+                f"{train_m['angular_error']:.2f}\xb0",
+                f"{eval_m['angular_error']:.2f}\xb0",
+                f"{iec['mean']:.2f}\xb0",
+                f"{iec['median']:.2f}\xb0",
+                f"{iec['trimean']:.2f}\xb0",
+            )
+
+            # tqdm.write(f"""
+            # Epoch {epoch + 1:>2}/{config.trainer.epochs}
+            #     Train | loss: {train_m["loss"]:.6f} error: {train_m["angular_error"]:.2f}\xb0
+            #     Eval  | loss={eval_m["loss"]:.6f} error: {eval_m["angular_error"]:.2f}\xb0
+            #     IEC   | mean: {iec["mean"]:.2f}\xb0 median: {iec["median"]:.2f}\xb0 trimean: {iec["trimean"]:.2f}\xb0
+            #     Saved {saved_to}
+            # """)
 
         if use_wandb:
-            wandb.log(
-                {
-                    "train_loss": train_m["loss"],
-                    "train_angular_error": train_m["angular_error"],
-                    "eval_loss": eval_m["loss"],
-                    "eval_angular_error": eval_m["angular_error"],
-                    "mean": iec["mean"],
-                    "median": iec["median"],
-                    "trimean": iec["trimean"],
-                    "best_25": iec["best_25"],
-                    "worst_25": iec["worst_25"],
-                    "worst": iec["worst"],
-                    "epoch": epoch + 1,
-                }
-            )
-
-        tqdm.write(
-            "\n".join(
-                [
-                    f"Epoch {epoch + 1:>2}/{config.trainer.epochs}"
-                    f"  Train | loss: {train_m['loss']:.6f} error: {train_m['angular_error']:.2f}°"
-                    f"  Eval  | loss={eval_m['loss']:.6f} error: {eval_m['angular_error']:.2f}°"
-                    f"  IEC   |  mean: {iec['mean']:.2f}° median: {iec['median']:.2f}° trimean: {iec['trimean']:.2f}°"
-                    f"  Saved {saved_to}"
-                ]
-            )
-        )
-
-    if use_wandb:
-        wandb.finish()
+            wandb.finish()
 
 
 if __name__ == "__main__":

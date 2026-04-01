@@ -55,11 +55,11 @@ def main(args):
         pprint(state.config, expand_all=True, indent_guides=False)
 
     model = ViT(
-        img_size=state.config["img_size"],
-        patch_size=state.config["patch_size"],
-        dim=state.config["dim"],
-        depth=state.config["depth"],
-        num_heads=state.config["num_heads"],
+        img_size=state.config["model"]["img_size"],
+        patch_size=state.config["model"]["patch_size"],
+        dim=state.config["model"]["dim"],
+        depth=state.config["model"]["depth"],
+        num_heads=state.config["model"]["num_heads"],
         rngs=nnx.Rngs(0),
     )
     nnx.update(model, state.model_state)

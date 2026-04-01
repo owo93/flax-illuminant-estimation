@@ -57,7 +57,14 @@ class Config:
         return cls(model=ModelConfig(**model_d), trainer=TrainerConfig(**trainer_d))
 
     def to_dict(self):
-        return {
-            "model": {k: v for k, v in asdict(self.model).items()},
-            "trainer": {k: v for k, v in asdict(self.trainer).items()},
-        }
+        def convert(obj):
+            if isinstance(obj, Path):
+                return str(obj)
+            if isinstance(obj, (list, tuple)):
+                return [convert(v) for v in obj]
+            if isinstance(obj, dict):
+                return {k: convert(v) for k, v in obj.items()}
+
+            return obj
+
+        return convert(asdict(self))
