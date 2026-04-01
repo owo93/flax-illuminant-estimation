@@ -106,8 +106,8 @@ def main(args):
         init_value=0.0,
         peak_value=config.trainer.learning_rate,
         warmup_steps=3 * steps_per_epoch,
-        decay_steps=50 * steps_per_epoch,
-        end_value=1e-6,
+        decay_steps=config.trainer.epochs * steps_per_epoch,
+        end_value=config.trainer.learning_rate * 0.01,
     )
     optimizer = nnx.ModelAndOptimizer(
         model,
@@ -135,20 +135,17 @@ def main(args):
 
     if use_wandb:
         wandb.init(project="flax-illuminant-estimation", tags=["IEC"], config=config.to_dict())
-        run_config = wandb.config.update(config.to_dict(), allow_val_change=True)
-    else:
-        run_config = config
 
     print(
-        f"Training on {jax.devices()} | Precision: {run_config.trainer.precision} ({config.trainer.dtype})"
+        f"Training on {jax.devices()} | Precision: {config.trainer.precision} ({config.trainer.dtype})"
     )
     pprint(config.to_dict(), expand_all=True, indent_guides=False)
 
-    for epoch in range(start_epoch, run_config.trainer.epochs):
+    for epoch in range(start_epoch, config.trainer.epochs):
         train_metrics.reset()
 
         pbar = tqdm(
-            train_ds.batches(run_config.trainer.batch_size),
+            train_ds.batches(config.trainer.batch_size),
             desc="Train",
             leave=False,
             ncols=80,
@@ -178,9 +175,7 @@ def main(args):
 
         all_errors = []
 
-        for batch_images, batch_illum in test_ds.batches(
-            run_config.trainer.batch_size, shuffle=False
-        ):
+        for batch_images, batch_illum in test_ds.batches(config.trainer.batch_size, shuffle=False):
             errors = evaluate(model, eval_rngs, eval_metrics, batch_images, batch_illum)
             all_errors.append(errors)
 
@@ -219,7 +214,7 @@ def main(args):
         tqdm.write(
             "\n".join(
                 [
-                    f"Epoch {epoch + 1:>2}/{run_config.trainer.epochs}"
+                    f"Epoch {epoch + 1:>2}/{config.trainer.epochs}"
                     f"  Train | loss: {train_m['loss']:.6f} error: {train_m['angular_error']:.2f}°"
                     f"  Eval  | loss={eval_m['loss']:.6f} error: {eval_m['angular_error']:.2f}°"
                     f"  IEC   |  mean: {iec['mean']:.2f}° median: {iec['median']:.2f}° trimean: {iec['trimean']:.2f}°"
