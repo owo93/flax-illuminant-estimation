@@ -27,6 +27,20 @@ def angular_loss(pred, target):
     return jnp.arccos(jnp.clip(cos_sim, -1.0, 1.0))
 
 
+# https://doi.org/10.1109/TPAMI.2016.2582171
+def reproduction_angular_error(image, pred, gt):
+    rendered_pred = image / (pred + 1e-8)
+    rendered_gt = image / (gt + 1e-8)
+
+    rgb_pred = jnp.sum(rendered_pred, axis=(0, 1))
+    rgb_gt = jnp.sum(rendered_gt, axis=(0, 1))
+
+    cos_sim = jnp.dot(rgb_pred, rgb_gt) / (
+        jnp.linalg.norm(rgb_pred) * jnp.linalg.norm(rgb_gt) + 1e-8
+    )
+    return jnp.degrees(jnp.arccos(jnp.clip(cos_sim, -1.0, 1.0)))
+
+
 def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
     def loss_fn(model):
         images = batch_images.astype(dtype)
@@ -46,11 +60,12 @@ def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
 @nnx.jit
 def evaluate(model, rngs, batch_images, batch_illum):
     pred = model(batch_images, train=False, rngs=rngs)
-    errors = angular_loss(pred, batch_illum)
-    return jnp.degrees(errors)
+    angular_error = angular_loss(pred, batch_illum)
+    repro_error = jax.vmap(reproduction_angular_error)(batch_images, pred, batch_illum)
+    return jnp.degrees(angular_error), repro_error
 
 
-def iec_metrics(errors):
+def compute_metrics(errors):
     n = len(errors)
     sorted_e = jnp.sort(errors)
     q1 = float(jnp.percentile(errors, 25))
@@ -66,7 +81,7 @@ def iec_metrics(errors):
     }
 
 
-def create_metrics() -> nnx.MultiMetric:
+def model_metrics() -> nnx.MultiMetric:
     return nnx.MultiMetric(
         loss=nnx.metrics.Average("loss"),
     )
@@ -121,11 +136,13 @@ def main(args):
         print("No checkpoint found, starting training from scratch")
         start_epoch = 0
 
-    train_metrics = create_metrics()
+    train_metrics = model_metrics()
     use_wandb: bool = config.trainer.wandb
 
     if use_wandb:
-        wandb.init(project="flax-illuminant-estimation", tags=["IEC"], config=config.to_dict())
+        wandb.init(
+            project="flax-illuminant-estimation", tags=["IEC", "RE"], config=config.to_dict()
+        )
 
     print(
         f"Training on {jax.devices()} | Precision: {config.trainer.precision} ({config.trainer.dtype})"
@@ -133,18 +150,24 @@ def main(args):
     pprint(config.to_dict(), expand_all=True, indent_guides=False)
 
     console = Console()
-    table = Table(title="Training Progress", expand=True, width=100)
+    table = Table(title="Training Progress", expand=True, row_styles=["dim", ""], min_width=120)
     [
         table.add_column(x)
         for x in [
             "epoch",
-            "train",
-            "mean",
-            "median",
-            "trimean",
-            "best 25%",
-            "worst 25%",
-            "worst",
+            "train_loss",
+            "ae_mean",
+            "ae_median",
+            "ae_trimean",
+            "ae_b25%",
+            "ae_w25%",
+            "ae_worst",
+            "rep_mean",
+            "rep_median",
+            "rep_trimean",
+            "rep_b25%",
+            "rep_w25%",
+            "rep_worst",
         ]
     ]
     progress = Progress(
@@ -177,7 +200,7 @@ def main(args):
                     config.trainer.dtype,
                 )
 
-                train_metrics.update(loss=loss, angular_error=jnp.degrees(loss))
+                train_metrics.update(loss=loss)
                 m = train_metrics.compute()
                 progress.update(
                     task,
@@ -188,16 +211,20 @@ def main(args):
             # Eval
             eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
 
-            all_errors = []
+            all_ae = []
+            all_repro = []
 
             for batch_images, batch_illum in test_ds.batches(
                 config.trainer.batch_size, shuffle=False
             ):
-                errors = evaluate(model, eval_rngs, batch_images, batch_illum)
-                all_errors.append(errors)
+                angular_error, repro_erorr = evaluate(model, eval_rngs, batch_images, batch_illum)
+                all_ae.append(angular_error)
+                all_repro.append(repro_erorr)
 
-            all_errors = jnp.concatenate(all_errors, axis=0)
-            iec = iec_metrics(all_errors)
+            all_ae = jnp.concatenate(all_ae, axis=0)
+            all_repro = jnp.concatenate(all_repro, axis=0)
+
+            errors = {"angular": compute_metrics(all_ae), "repro": compute_metrics(all_repro)}
 
             train_m = train_metrics.compute()
 
@@ -215,25 +242,37 @@ def main(args):
                     {
                         "train/loss": float(train_m["loss"]),
                         "train/loss_deg": float(jnp.degrees(train_m["loss"])),
-                        "iec/mean": iec["mean"],
-                        "iec/median": iec["median"],
-                        "iec/trimean": iec["trimean"],
-                        "iec/best_25": iec["best_25"],
-                        "iec/worst_25": iec["worst_25"],
-                        "iec/worst": iec["worst"],
+                        "iec/mean": errors["angular"]["mean"],
+                        "iec/median": errors["angular"]["median"],
+                        "iec/trimean": errors["angular"]["trimean"],
+                        "iec/best_25": errors["angular"]["best_25"],
+                        "iec/worst_25": errors["angular"]["worst_25"],
+                        "iec/worst": errors["angular"]["worst"],
+                        "repro/mean": errors["repro"]["mean"],
+                        "repro/median": errors["repro"]["median"],
+                        "repro/trimean": errors["repro"]["trimean"],
+                        "repro/best_25": errors["repro"]["best_25"],
+                        "repro/worst_25": errors["repro"]["worst_25"],
+                        "repro/worst": errors["repro"]["worst"],
                         "epoch": epoch + 1,
                     }
                 )
 
             table.add_row(
                 str(epoch + 1).zfill(2),
-                f"{train_m['loss']:.3f} \u2192 {jnp.degrees(train_m['loss']):.3f}\xb0",
-                f"{iec['mean']:.2f}\xb0",
-                f"{iec['median']:.2f}\xb0",
-                f"{iec['trimean']:.2f}\xb0",
-                f"{iec['best_25']:.2f}\xb0",
-                f"{iec['worst_25']:.2f}\xb0",
-                f"{iec['worst']:.2f}\xb0",
+                f"{jnp.degrees(train_m['loss']):.3f}\xb0",
+                f"{errors['angular']['mean']:.2f}\xb0",
+                f"{errors['angular']['median']:.2f}\xb0",
+                f"{errors['angular']['trimean']:.2f}\xb0",
+                f"{errors['angular']['best_25']:.2f}\xb0",
+                f"{errors['angular']['worst_25']:.2f}\xb0",
+                f"{errors['angular']['worst']:.2f}\xb0",
+                f"{errors['repro']['mean']:.4f}",
+                f"{errors['repro']['median']:.4f}",
+                f"{errors['repro']['trimean']:.4f}",
+                f"{errors['repro']['best_25']:.4f}",
+                f"{errors['repro']['worst_25']:.4f}",
+                f"{errors['repro']['worst']:.4f}",
             )
 
         if use_wandb:
