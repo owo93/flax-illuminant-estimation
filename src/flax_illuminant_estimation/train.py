@@ -95,8 +95,8 @@ def main(args):
 
     jax.config.update("jax_default_matmul_precision", "high")
 
-    train_ds = SimpleCubePPDataset("train")
-    test_ds = SimpleCubePPDataset("test")
+    train_ds = SimpleCubePPDataset("train", seed=config.trainer.seed)
+    test_ds = SimpleCubePPDataset("test", seed=config.trainer.seed + 1)
 
     rngs = nnx.Rngs(config.trainer.seed)
     rng_key = jax.random.key(config.trainer.seed)

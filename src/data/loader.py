@@ -74,16 +74,18 @@ class SimpleCubePPDataset:
         img = img.resize((224, 224), Image.Resampling.LANCZOS)
         img = jnp.array(img, dtype=jnp.float32) / 255.0
 
-        return jnp.array(img), sample["illuminant"]
+        return img, sample["illuminant"]
 
     def batches(self, batch_size, shuffle=True):
-        self.key, shuffle_key, augment_key = random.split(self.key, 3)
+        self.key, shuffle_key = random.split(self.key)
 
         indices = jnp.arange(len(self))
         if shuffle:
             indices = random.permutation(shuffle_key, indices)
 
         for start_idx in range(0, len(self), batch_size):
+            self.key, augment_key = random.split(self.key)
+
             batch_indices = indices[start_idx : start_idx + batch_size]
             if len(batch_indices) < batch_size:
                 continue
