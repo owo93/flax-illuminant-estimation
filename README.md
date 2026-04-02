@@ -1,6 +1,6 @@
 # ViT for Illuminant estimation
 
-A regressive implementation of Vision Transformer for predicting single illuminant color in images trained on the [SimpleCube++](https://github.com/Visillect/CubePlusPlus)  dataset, built with Flax NNX
+An implementation of Vision Transformer for predicting single illuminant color in images trained on the [SimpleCube++](https://github.com/Visillect/CubePlusPlus)  dataset, built with Flax NNX
 
 ```
 src/
