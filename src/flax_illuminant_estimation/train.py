@@ -1,4 +1,6 @@
+import math
 import sys
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -109,12 +111,14 @@ def main(args):
         rngs=rngs,
     )
 
-    steps_per_epoch = len(train_ds) // config.trainer.batch_size
+    steps_per_epoch = math.ceil(len(train_ds) / config.trainer.batch_size)
+    total_steps = config.trainer.epochs * steps_per_epoch
+    warmup_steps = 3
     schedule = optax.warmup_cosine_decay_schedule(
         init_value=0.0,
         peak_value=config.trainer.learning_rate,
-        warmup_steps=3 * steps_per_epoch,
-        decay_steps=config.trainer.epochs * steps_per_epoch,
+        warmup_steps=warmup_steps * steps_per_epoch,
+        decay_steps=(total_steps - warmup_steps) * steps_per_epoch,
         end_value=config.trainer.learning_rate * 0.01,
     )
     optimizer = nnx.ModelAndOptimizer(
