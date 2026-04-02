@@ -1,14 +1,14 @@
 model:
-    img_size:
-    patch_size:
-    dim:
-    depth:
-    num_heads:
+    img_size: 224
+    patch_size: 14
+    dim: 384
+    depth: 4
+    num_heads: 8
 trainer:
-    batch_size:
-    learning_rate:
-    epochs:
-    seed:
-    checkpoint_dir:
-    precision:
-    wandb:
+    batch_size: 32
+    learning_rate: 0.0002
+    epochs: 10
+    seed: 67
+    checkpoint_dir: ckpt
+    precision: bfloat16
+    wandb: False
