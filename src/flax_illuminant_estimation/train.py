@@ -18,8 +18,6 @@ from flax_illuminant_estimation.checkpoint import CheckpointState, load, save
 from flax_illuminant_estimation.config import Config
 from flax_illuminant_estimation.model import ViT
 
-__import__("dotenv").load_dotenv()
-
 
 @jax.jit
 def angular_loss(pred, target):
@@ -132,7 +130,8 @@ def main(args):
 
     if args.resume:
         print(f"Resuming from checkpoint: {args.resume}")
-        state = load(args.resume)
+        checkpoint = Path(args.resume)
+        state = load(checkpoint)
         nnx.update(model, state.model_state)
         start_epoch = state.epoch
         print(f"Resumed from epoch {start_epoch}")
@@ -209,7 +208,7 @@ def main(args):
                 progress.update(
                     task,
                     advance=1,
-                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss {m['loss']:.7f} \u2192 {jnp.degrees(m['loss']):.3f}\xb0",
+                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss {float(m['loss']):.7f} \u2192 {jnp.degrees(float(m['loss'])):.3f}\xb0",
                 )
 
             # Eval
@@ -221,9 +220,9 @@ def main(args):
             for batch_images, batch_illum in test_ds.batches(
                 config.trainer.batch_size, shuffle=False
             ):
-                angular_error, repro_erorr = evaluate(model, eval_rngs, batch_images, batch_illum)
+                angular_error, repro_error = evaluate(model, eval_rngs, batch_images, batch_illum)
                 all_ae.append(angular_error)
-                all_repro.append(repro_erorr)
+                all_repro.append(repro_error)
 
             all_ae = jnp.concatenate(all_ae, axis=0)
             all_repro = jnp.concatenate(all_repro, axis=0)
