@@ -19,6 +19,22 @@ from flax_illuminant_estimation.config import Config
 from flax_illuminant_estimation.model import ViT
 
 
+class TrainState:
+    def __init__(
+        self,
+        model: ViT,
+        optimizer: nnx.Optimizer,
+        schedule: optax.Schedule,
+        rngs: nnx.Rngs,
+        step: int,
+    ):
+        self.model = model
+        self.optimizer = optimizer
+        self.schedule = schedule
+        self.rngs = rngs
+        self.step = step
+
+
 @jax.jit
 def angular_loss(pred, target):
     cos_sim = jnp.sum(pred * target, axis=-1) / (
@@ -41,20 +57,34 @@ def reproduction_angular_error(image, pred, gt):
     return jnp.degrees(jnp.arccos(jnp.clip(cos_sim, -1.0, 1.0)))
 
 
-def train_step(model, optimizer, rngs, batch_images, batch_illum, dtype):
+def create_lr_fn(config, steps_per_epoch):
+    total_steps = config.trainer.epochs * steps_per_epoch
+    warmup_steps = 3
+    return optax.warmup_cosine_decay_schedule(
+        init_value=0.0,
+        peak_value=config.trainer.learning_rate,
+        warmup_steps=warmup_steps * steps_per_epoch,
+        decay_steps=total_steps - warmup_steps * steps_per_epoch,
+        end_value=config.trainer.learning_rate * 0.01,
+    )
+
+
+def train_step(state: TrainState, batch_images, batch_illum, dtype):
     def loss_fn(model):
         images = batch_images.astype(dtype)
-        illum = batch_illum.astype(dtype)
-        pred = model(images, train=True, rngs=rngs)
-        loss = angular_loss(pred.astype(jnp.float32), illum.astype(jnp.float32))
-
+        illuminants = batch_illum.astype(dtype)
+        predictions = model(images, train=True, rngs=state.rngs)
+        loss = angular_loss(predictions.astype(jnp.float32), illuminants.astype(jnp.float32))
         return jnp.mean(loss)
 
-    loss, grads = nnx.value_and_grad(loss_fn)(model)
+    loss, grads = nnx.value_and_grad(loss_fn)(state.model)
     grads = jax.tree.map(lambda g: jnp.where(jnp.isnan(g), jnp.zeros_like(g), g), grads)
+    state.optimizer.update(state.model, grads)
 
-    optimizer.update(grads)
-    return loss
+    return {
+        "train/loss": loss,
+        "train/lr": state.schedule(state.step),
+    }
 
 
 @nnx.jit
@@ -98,6 +128,10 @@ def main(args):
     train_ds = SimpleCubePPDataset("train", seed=config.trainer.seed)
     test_ds = SimpleCubePPDataset("test", seed=config.trainer.seed + 1)
 
+    steps_per_epoch = math.ceil(len(train_ds) / config.trainer.batch_size)
+    total_steps = config.trainer.epochs * steps_per_epoch
+    schedule = create_lr_fn(config, steps_per_epoch)
+
     rngs = nnx.Rngs(config.trainer.seed)
     rng_key = jax.random.key(config.trainer.seed)
     model = ViT(
@@ -109,17 +143,7 @@ def main(args):
         rngs=rngs,
     )
 
-    steps_per_epoch = math.ceil(len(train_ds) / config.trainer.batch_size)
-    total_steps = config.trainer.epochs * steps_per_epoch
-    warmup_steps = 3
-    schedule = optax.warmup_cosine_decay_schedule(
-        init_value=0.0,
-        peak_value=config.trainer.learning_rate,
-        warmup_steps=warmup_steps * steps_per_epoch,
-        decay_steps=(total_steps - warmup_steps) * steps_per_epoch,
-        end_value=config.trainer.learning_rate * 0.01,
-    )
-    optimizer = nnx.ModelAndOptimizer(
+    optimizer = nnx.Optimizer(
         model,
         optax.chain(
             optax.clip_by_global_norm(1.0),
@@ -144,7 +168,10 @@ def main(args):
 
     if use_wandb:
         wandb.init(
-            project="flax-illuminant-estimation", tags=["IEC", "RE"], config=config.to_dict()
+            project="flax-illuminant-estimation",
+            group=config.trainer.wandb_group,
+            tags=["Step", "IEC", "RE"],
+            config=config.to_dict() | {"total_steps": total_steps},
         )
 
     print(
@@ -191,20 +218,38 @@ def main(args):
             )
 
             # Train
-            for batch_images, batch_illum in train_ds.batches(config.trainer.batch_size):
+            for i, (batch_images, batch_illum) in enumerate(
+                train_ds.batches(config.trainer.batch_size)
+            ):
                 rng_key, params_key, dropout_key = jax.random.split(rng_key, num=3)
-                rngs = nnx.Rngs(params=params_key, dropout=dropout_key)
-                loss = train_step(
-                    model,
-                    optimizer,
-                    rngs,
+                train_state = TrainState(
+                    model=model,
+                    optimizer=optimizer,
+                    schedule=schedule,
+                    rngs=nnx.Rngs(params=params_key, dropout=dropout_key),
+                    step=epoch * steps_per_epoch + i,
+                )
+
+                step_metrics = train_step(
+                    train_state,
                     batch_images,
                     batch_illum,
                     config.trainer.dtype,
                 )
 
-                train_metrics.update(loss=loss)
+                train_metrics.update(loss=step_metrics["train/loss"])
                 m = train_metrics.compute()
+
+                if use_wandb:
+                    wandb.define_metric("step/*", step_metric="step/global")
+                    wandb.log(
+                        {
+                            "step/global": train_state.step,
+                            "step/loss": float(step_metrics["train/loss"]),
+                            "step/lr": float(step_metrics["train/lr"]),
+                        },
+                    )
+
                 progress.update(
                     task,
                     advance=1,
@@ -241,6 +286,9 @@ def main(args):
             save(state, config.trainer.checkpoint_dir)
 
             if use_wandb:
+                wandb.define_metric("train/*", step_metric="epoch")
+                wandb.define_metric("iec/*", step_metric="epoch")
+                wandb.define_metric("repro/*", step_metric="epoch")
                 wandb.log(
                     {
                         "train/loss": float(train_m["loss"]),
@@ -262,7 +310,7 @@ def main(args):
                 )
 
             table.add_row(
-                str(epoch + 1).zfill(2),
+                f"{str(epoch + 1).zfill(2)}",
                 f"{jnp.degrees(train_m['loss']):.3f}\xb0",
                 f"{errors['angular']['mean']:.2f}\xb0",
                 f"{errors['angular']['median']:.2f}\xb0",
