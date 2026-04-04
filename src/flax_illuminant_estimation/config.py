@@ -30,6 +30,7 @@ class TrainerConfig:
     checkpoint_dir: Path = field(default_factory=lambda: Path("checkpoints"))
     precision: Literal["float16", "bfloat16", "float32"] = "float32"
     wandb: bool = False
+    wandb_group: str = "A"
 
     def __post_init__(self):
         if not isinstance(self.checkpoint_dir, Path):
