@@ -103,7 +103,7 @@ class Trainer:
         return {
             "eval/loss": ae,
             "eval/ae": jnp.degrees(ae),
-            "eval/rae": rae,
+            "eval/rae": jnp.degrees(rae),
         }
 
     @staticmethod

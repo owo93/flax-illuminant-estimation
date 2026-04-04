@@ -19,10 +19,10 @@ def preprocess_image(path, size=224):
     return img
 
 
-def estimate_illuminant(model, image_path, rngs=None):
+def estimate_illuminant(model, image_path):
     img = preprocess_image(image_path)
     img_batch = jnp.expand_dims(img, axis=0)
-    pred = model(img_batch, train=False, rngs=rngs or nnx.Rngs())
+    pred = model(img_batch, train=False)
     return pred[0]
 
 
@@ -67,8 +67,7 @@ def main(args):
     print(f"\nRestored from checkpoint at epoch {state.epoch}")
 
     print(f"\nEstimating illuminant for: {args.image}")
-    rngs = nnx.Rngs(dropout=jax.random.key(0))
-    pred = estimate_illuminant(model, args.image, rngs)
+    pred = estimate_illuminant(model, args.image)
 
     r, g, b = float(pred[0]), float(pred[1]), float(pred[2])
     print(f"Chromaticity: {r:.4f}, {g:.4f}, {b:.4f}")
