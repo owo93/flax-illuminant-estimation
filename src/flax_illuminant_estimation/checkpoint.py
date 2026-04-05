@@ -27,7 +27,11 @@ def save(state: CheckpointState, checkpoint_dir: Path):
     }
     step_dir = checkpoint_dir.resolve() / f"checkpoint_{int(state.epoch):02}"
     _checkpointer.save(
-        step_dir, ckpt, save_args=flax.training.orbax_utils.save_args_from_target(ckpt), force=True
+        step_dir,
+        ckpt,
+        save_args=flax.training.orbax_utils.save_args_from_target(ckpt),
+        force=True,
+        custom_metadata={"epoch": state.epoch, "config": state.config},
     )
     return step_dir
 

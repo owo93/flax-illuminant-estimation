@@ -114,7 +114,7 @@ def main(args):
                     wandb.define_metric("step/*", step_metric="step/global")
                     wandb.log(
                         {
-                            "step/global": state.global_step,
+                            "step/global": state.global_step.value,
                             "step/loss": float(step_metrics["train/loss"]),
                             "step/lr": float(step_metrics["train/lr"]),
                         },
