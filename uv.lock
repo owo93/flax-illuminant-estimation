@@ -253,6 +253,7 @@ source = { editable = "." }
 dependencies = [
     { name = "flax" },
     { name = "jax", extra = ["cuda13"] },
+    { name = "orbax" },
     { name = "pillow" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -271,6 +272,7 @@ dev = [
 requires-dist = [
     { name = "flax", extras = ["cuda"], specifier = ">=0.12.3" },
     { name = "jax", extras = ["cuda13"], specifier = ">=0.9.0.1" },
+    { name = "orbax", specifier = ">=0.1.9" },
     { name = "pillow", specifier = ">=12.1.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rich", specifier = ">=14.3.2" },
@@ -857,6 +859,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/de/f7/a63fc3d262d7a58d7
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b8/1e/94ad43e06887244b4d25f58b689122270ba3c129d3448052958eecf7518a/optax-0.2.7-py3-none-any.whl", hash = "sha256:241f2dfa104eab4fec2e16e7919f88df24a3da1481f95e264b3db396b30d4ff6", size = 399395, upload-time = "2026-02-05T20:49:26.883Z" },
 ]
+
+[[package]]
+name = "orbax"
+version = "0.1.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "orbax-checkpoint" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c7/78/0e144f12703c95d4495e9abc390c2f548ee9f24d2e487137108a921b1d81/orbax-0.1.9.tar.gz", hash = "sha256:42dd487ceef9fbf027f4720f3d041686af75120466a528a8a8141226bc197218", size = 1649, upload-time = "2023-09-06T20:43:02.819Z" }
 
 [[package]]
 name = "orbax-checkpoint"

@@ -13,7 +13,7 @@ from rich.table import Table
 
 import wandb
 from data.loader import SimpleCubePPDataset
-from flax_illuminant_estimation.checkpoint import CheckpointState, load, save
+from flax_illuminant_estimation.checkpoint import CheckpointState, save
 from flax_illuminant_estimation.config import Config
 from flax_illuminant_estimation.lib import Trainer, TrainState, compute_metrics
 from flax_illuminant_estimation.model import ViT

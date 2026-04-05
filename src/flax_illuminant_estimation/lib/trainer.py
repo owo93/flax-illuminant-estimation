@@ -34,12 +34,12 @@ class TrainState(nnx.Optimizer):
     ):
         super().__init__(model, tx, wrt=nnx.Param)
         self.schedule = schedule
-        self.global_step: int = 0
+        self.global_step = nnx.Variable(0)
         self.model = model
 
     @property
     def lr(self):
-        return self.schedule(self.global_step)
+        return self.schedule(self.global_step.value)
 
 
 class Trainer:
@@ -78,7 +78,7 @@ class Trainer:
         grads = jax.tree.map(lambda g: jnp.where(jnp.isnan(g), jnp.zeros_like(g), g), grads)
         state.update(state.model, grads)
 
-        state.global_step += 1
+        state.global_step.value += 1
 
         return {"train/loss": loss, "train/lr": state.lr}
 
