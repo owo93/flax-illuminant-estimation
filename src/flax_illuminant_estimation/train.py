@@ -4,10 +4,17 @@ import sys
 import jax
 import jax.numpy as jnp
 from flax import nnx
+from rich import box
 from rich.console import Console, Group
 from rich.live import Live
 from rich.pretty import pprint
-from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 
 import wandb
@@ -61,29 +68,21 @@ def main(args):
     pprint(config.to_dict(), expand_all=True, indent_guides=False)
 
     console = Console()
-    table = Table(title="Training Progress", expand=True, row_styles=["dim", ""], min_width=120)
-    [
-        table.add_column(x)
-        for x in [
-            "epoch",
-            "train_loss",
-            "eval_loss",
-            "ae_mean",
-            "ae_median",
-            "ae_trimean",
-            "ae_b25%",
-            "ae_w25%",
-            "ae_worst",
-            "rep_mean",
-            "rep_median",
-            "rep_trimean",
-            "rep_b25%",
-            "rep_w25%",
-            "rep_worst",
-        ]
-    ]
+    table = Table(
+        title="Training Progress",
+        expand=True,
+        row_styles=["dim", ""],
+        box=box.SIMPLE,
+        min_width=120,
+    )
+    table.add_column("epoch", justify="right", style="on black")
+    table.add_column("train_loss")
+    table.add_column("eval_loss")
+    table.add_column("ae_mean")
+    table.add_column("rep_mean")
+
     progress = Progress(
-        TimeElapsedColumn(),
+        MofNCompleteColumn(),
         TextColumn("{task.description}"),
         BarColumn(),
         TimeRemainingColumn(),
@@ -104,7 +103,7 @@ def main(args):
 
             # Training
             for batch_images, batch_illum in train_ds.batches(config.trainer.batch_size):
-                step_metrics = trainer.train_step(
+                step_metrics: dict = trainer.train_step(
                     state, batch_images, batch_illum, config.trainer.dtype
                 )
                 train_metrics.update(loss=step_metrics["train/loss"])
@@ -123,7 +122,7 @@ def main(args):
                 progress.update(
                     task,
                     advance=1,
-                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss {float(m['loss']):.7f} \u2192 {jnp.degrees(float(m['loss'])):.3f}\xb0",
+                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss {float(m['loss']):.7f}\xb0",
                 )
 
             # Evaluation
@@ -185,18 +184,8 @@ def main(args):
                 f"{str(epoch + 1).zfill(2)}",
                 f"{jnp.degrees(train_m['loss']):.3f}\xb0",
                 f"{jnp.degrees(eval_m['loss']):.3f}\xb0",
-                f"{errors['angular']['mean']:.2f}\xb0",
-                f"{errors['angular']['median']:.2f}\xb0",
-                f"{errors['angular']['trimean']:.2f}\xb0",
-                f"{errors['angular']['best_25']:.2f}\xb0",
-                f"{errors['angular']['worst_25']:.2f}\xb0",
-                f"{errors['angular']['worst']:.2f}\xb0",
-                f"{errors['repro']['mean']:.4f}",
-                f"{errors['repro']['median']:.4f}",
-                f"{errors['repro']['trimean']:.4f}",
-                f"{errors['repro']['best_25']:.4f}",
-                f"{errors['repro']['worst_25']:.4f}",
-                f"{errors['repro']['worst']:.4f}",
+                f"{errors['angular']['mean']:.3f}\xb0",
+                f"{errors['repro']['mean']:.3f}\xb0",
             )
 
         if use_wandb:

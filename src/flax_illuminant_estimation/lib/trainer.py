@@ -83,7 +83,7 @@ class Trainer:
         return {"train/loss": loss, "train/lr": state.lr}
 
     @staticmethod
-    def _loss_fn(model: ViT, batch_images, batch_illum, dtype):
+    def _loss_fn(model: ViT, batch_images: jnp.ndarray, batch_illum: jnp.ndarray, dtype):
         pred = model(batch_images.astype(dtype), train=True)
         return jnp.mean(
             angular_error(
