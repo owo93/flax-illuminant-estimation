@@ -76,7 +76,7 @@ class SimpleCubePPDataset:
 
         return img, sample["illuminant"]
 
-    def batches(self, batch_size, shuffle=True):
+    def batches(self, batch_size: int, shuffle=True):
         self.key, shuffle_key = random.split(self.key)
 
         indices = jnp.arange(len(self))

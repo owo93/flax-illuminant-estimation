@@ -9,10 +9,6 @@ def main():
 
     train_parser = subparser.add_parser("train", help="train model")
     train_parser.add_argument("--config", help="path to config file")
-    train_parser.add_argument(
-        "--resume",
-        help="path to checkpoint directory to resume from",
-    )
 
     infer_parser = subparser.add_parser("infer", help="run inference")
 

@@ -1,6 +1,5 @@
 import math
 import sys
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -46,17 +45,6 @@ def main(args):
     trainer = Trainer(config.trainer)
     state: TrainState = trainer.create_train_state(model, steps_per_epoch)
 
-    if args.resume:
-        print(f"Resuming from checkpoint: {args.resume}")
-        checkpoint = Path(args.resume)
-        ckpt = load(checkpoint)
-        nnx.update(model, ckpt.model_state)
-        start_epoch = ckpt.epoch
-        print(f"Resumed from epoch {start_epoch}")
-    else:
-        print("No checkpoint found, starting training from scratch")
-        start_epoch = 0
-
     # Logging
     use_wandb: bool = config.trainer.wandb
     if use_wandb:
@@ -65,6 +53,7 @@ def main(args):
             group=config.trainer.wandb_group,
             tags=["Step", "IEC", "RE"],
             config=config.to_dict() | {"total_steps": total_steps},
+            settings=wandb.Settings(console="off"),
         )
     print(
         f"Training on {jax.devices()} | Precision: {config.trainer.precision} ({config.trainer.dtype})"
@@ -105,7 +94,7 @@ def main(args):
     eval_metrics = Trainer.create_metrics()
 
     with Live(Group(table, progress), console=console, refresh_per_second=4):
-        for epoch in range(start_epoch, config.trainer.epochs):
+        for epoch in range(0, config.trainer.epochs):
             train_metrics.reset()
             eval_metrics.reset()
             progress.reset(task)
