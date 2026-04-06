@@ -62,6 +62,11 @@ def main(args):
             config=config.to_dict() | {"total_steps": total_steps},
             settings=wandb.Settings(console="off"),
         )
+        wandb.define_metric("step/*", step_metric="step/global")
+        wandb.define_metric("train/*", step_metric="epoch")
+        wandb.define_metric("eval/*", step_metric="epoch")
+        wandb.define_metric("iec/*", step_metric="epoch")
+        wandb.define_metric("repro/*", step_metric="epoch")
     print(
         f"Training on {jax.devices()} | Precision: {config.trainer.precision} ({config.trainer.dtype})"
     )
@@ -71,14 +76,15 @@ def main(args):
     table = Table(
         title="Training Progress",
         expand=True,
-        row_styles=["dim", ""],
+        row_styles=["", "dim"],
         box=box.SIMPLE,
         min_width=120,
     )
     table.add_column("epoch", justify="right", style="on black")
     table.add_column("train_loss")
+    table.add_column("train_ae", style="cyan")
     table.add_column("eval_loss")
-    table.add_column("eval_ae")
+    table.add_column("eval_ae", style="cyan")
     table.add_column("eval_rae")
 
     progress = Progress(
@@ -103,17 +109,18 @@ def main(args):
             )
 
             # Training
-            for batch_images, batch_illum in train_ds.batches(config.trainer.batch_size):
+            for i, (batch_images, batch_illum) in enumerate(
+                train_ds.batches(config.trainer.batch_size)
+            ):
                 step: dict = trainer.train_step(
                     state, batch_images, batch_illum, config.trainer.dtype
                 )
-                train_metrics.update(loss=step["train/loss"])
+                train_metrics.update(loss=step["train/loss"], ae=step["train/ae"])
 
                 # NOTE: .compute() here accumulates the metrics across all batches in this epoch
                 _m = train_metrics.compute()
 
-                if use_wandb:
-                    wandb.define_metric("step/*", step_metric="step/global")
+                if use_wandb and i % 5 == 0:
                     wandb.log(
                         {
                             "step/global": state.global_step.value,
@@ -166,13 +173,10 @@ def main(args):
             save(ckpt, config.trainer.checkpoint_dir)
 
             if use_wandb:
-                wandb.define_metric("train/*", step_metric="epoch")
-                wandb.define_metric("eval/*", step_metric="epoch")
-                wandb.define_metric("iec/*", step_metric="epoch")
-                wandb.define_metric("repro/*", step_metric="epoch")
                 wandb.log(
                     {
                         "train/loss": float(train_m["loss"]),
+                        "train/ae": float(train_m["ae"]),
                         "eval/loss": float(eval_m["loss"]),
                         "eval/ae": float(eval_m["ae"]),
                         "eval/rae": float(eval_m["rae"]),
@@ -195,6 +199,7 @@ def main(args):
             table.add_row(
                 f"{str(epoch + 1).zfill(2)}",
                 f"{float(train_m['loss']):.6f}",
+                f"{float(train_m['ae']):.3f}\xb0",
                 f"{float(eval_m['loss']):.6f}",
                 f"{float(eval_m['ae']):.3f}\xb0",
                 f"{float(eval_m['rae']):.3f}\xb0",
