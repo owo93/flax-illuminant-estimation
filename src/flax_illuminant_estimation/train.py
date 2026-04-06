@@ -78,8 +78,8 @@ def main(args):
     table.add_column("epoch", justify="right", style="on black")
     table.add_column("train_loss")
     table.add_column("eval_loss")
-    table.add_column("ae_mean")
-    table.add_column("rep_mean")
+    table.add_column("eval_ae")
+    table.add_column("eval_rae")
 
     progress = Progress(
         MofNCompleteColumn(),
@@ -89,8 +89,8 @@ def main(args):
         console=console,
     )
     task = progress.add_task("Train", total=steps_per_epoch)
-    train_metrics = Trainer.create_metrics()
-    eval_metrics = Trainer.create_metrics()
+    train_metrics = Trainer.train_metrics()
+    eval_metrics = Trainer.eval_metrics()
 
     with Live(Group(table, progress), console=console, refresh_per_second=4):
         for epoch in range(0, config.trainer.epochs):
@@ -98,31 +98,34 @@ def main(args):
             eval_metrics.reset()
             progress.reset(task)
             progress.update(
-                task, description=f"epoch {epoch + 1}/{config.trainer.epochs}: training..."
+                task,
+                description=f"epoch {epoch + 1}/{config.trainer.epochs}: training...",
             )
 
             # Training
             for batch_images, batch_illum in train_ds.batches(config.trainer.batch_size):
-                step_metrics: dict = trainer.train_step(
+                step: dict = trainer.train_step(
                     state, batch_images, batch_illum, config.trainer.dtype
                 )
-                train_metrics.update(loss=step_metrics["train/loss"])
-                m = train_metrics.compute()
+                train_metrics.update(loss=step["train/loss"])
+
+                # NOTE: .compute() here accumulates the metrics across all batches in this epoch
+                _m = train_metrics.compute()
 
                 if use_wandb:
                     wandb.define_metric("step/*", step_metric="step/global")
                     wandb.log(
                         {
                             "step/global": state.global_step.value,
-                            "step/loss": float(step_metrics["train/loss"]),
-                            "step/lr": float(step_metrics["train/lr"]),
+                            "step/loss": float(step["train/loss"]),
+                            "step/lr": float(step["train/lr"]),
                         },
                     )
 
                 progress.update(
                     task,
                     advance=1,
-                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss {float(m['loss']):.7f}\xb0",
+                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss {float(_m['loss']):.7f}",
                 )
 
             # Evaluation
@@ -131,15 +134,24 @@ def main(args):
             for batch_images, batch_illum in test_ds.batches(
                 config.trainer.batch_size, shuffle=False
             ):
-                step = trainer.eval_step(state, batch_images, batch_illum, config.trainer.dtype)
+                step: dict = trainer.eval_step(
+                    state, batch_images, batch_illum, config.trainer.dtype
+                )
                 all_ae.append(step["eval/ae"])
                 all_repro.append(step["eval/rae"])
-                eval_metrics.update(loss=step["eval/loss"])
+                eval_metrics.update(
+                    loss=step["eval/loss"],
+                    ae=step["eval/ae"],
+                    rae=step["eval/rae"],
+                )
 
+            # Full distribution stats
             all_ae = jnp.concatenate(all_ae, axis=0)
             all_repro = jnp.concatenate(all_repro, axis=0)
-
-            errors = {"angular": compute_metrics(all_ae), "repro": compute_metrics(all_repro)}
+            errors = {
+                "angular": compute_metrics(all_ae),
+                "repro": compute_metrics(all_repro),
+            }
 
             train_m = train_metrics.compute()
             eval_m = eval_metrics.compute()
@@ -161,9 +173,9 @@ def main(args):
                 wandb.log(
                     {
                         "train/loss": float(train_m["loss"]),
-                        "train/loss_deg": float(jnp.degrees(train_m["loss"])),
                         "eval/loss": float(eval_m["loss"]),
-                        "eval/loss_deg": float(jnp.degrees(eval_m["loss"])),
+                        "eval/ae": float(eval_m["ae"]),
+                        "eval/rae": float(eval_m["rae"]),
                         "iec/mean": errors["angular"]["mean"],
                         "iec/median": errors["angular"]["median"],
                         "iec/trimean": errors["angular"]["trimean"],
@@ -182,10 +194,10 @@ def main(args):
 
             table.add_row(
                 f"{str(epoch + 1).zfill(2)}",
-                f"{jnp.degrees(train_m['loss']):.3f}\xb0",
-                f"{jnp.degrees(eval_m['loss']):.3f}\xb0",
-                f"{errors['angular']['mean']:.3f}\xb0",
-                f"{errors['repro']['mean']:.3f}\xb0",
+                f"{float(train_m['loss']):.6f}",
+                f"{float(eval_m['loss']):.6f}",
+                f"{float(eval_m['ae']):.3f}\xb0",
+                f"{float(eval_m['rae']):.3f}\xb0",
             )
 
         if use_wandb:
