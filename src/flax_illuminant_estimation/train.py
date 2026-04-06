@@ -105,7 +105,7 @@ def main(args):
             progress.reset(task)
             progress.update(
                 task,
-                description=f"epoch {epoch + 1}/{config.trainer.epochs}: training...",
+                description=f"epoch [u bold green]{epoch + 1}/{config.trainer.epochs}: training...",
             )
 
             # Training
@@ -132,7 +132,7 @@ def main(args):
                 progress.update(
                     task,
                     advance=1,
-                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss {float(_m['loss']):.7f}",
+                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss \u2192 [i bold cyan]{float(_m['loss']):.7f}",
                 )
 
             # Evaluation
