@@ -25,6 +25,7 @@ class ModelConfig:
 class TrainerConfig:
     batch_size: int = 32
     learning_rate: float = 1e-4
+    weight_decay: float = 5e-2
     epochs: int = 10
     seed: int = 42
     checkpoint_dir: Path = field(default_factory=lambda: Path("checkpoints"))

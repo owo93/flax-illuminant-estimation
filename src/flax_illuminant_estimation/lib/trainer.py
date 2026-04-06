@@ -64,7 +64,9 @@ class Trainer:
         config: TrainerConfig = self.config
         schedule = self.create_schedule(config.epochs, config.learning_rate, steps_per_epoch)
 
-        tx = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(schedule, weight_decay=0.05))
+        tx = optax.chain(
+            optax.clip_by_global_norm(1.0), optax.adamw(schedule, weight_decay=config.weight_decay)
+        )
 
         return TrainState(model, tx, schedule)
 
