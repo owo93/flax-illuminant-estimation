@@ -31,6 +31,7 @@ class TrainerConfig:
     precision: Literal["float16", "bfloat16", "float32"] = "float32"
     wandb: bool = False
     wandb_group: str = "A"
+    wandb_tags: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         if not isinstance(self.checkpoint_dir, Path):

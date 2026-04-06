@@ -58,7 +58,7 @@ def main(args):
         wandb.init(
             project="flax-illuminant-estimation",
             group=config.trainer.wandb_group,
-            tags=["Step", "IEC", "RE"],
+            tags=config.trainer.wandb_tags,
             config=config.to_dict() | {"total_steps": total_steps},
             settings=wandb.Settings(console="off"),
         )
