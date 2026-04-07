@@ -124,7 +124,7 @@ def main(args):
                     wandb.log(
                         {
                             "step/global": state.global_step.value,
-                            "step/loss": float(step["train/loss"]),
+                            "step/loss": float(jnp.mean(step["train/loss"])),
                             "step/lr": float(step["train/lr"]),
                         },
                     )

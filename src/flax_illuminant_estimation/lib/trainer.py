@@ -73,7 +73,7 @@ class Trainer:
     def train_step(
         self, state: TrainState, batch_images: jnp.ndarray, batch_illum: jnp.ndarray, dtype
     ):
-        (loss, cos_sim), grads = nnx.value_and_grad(self.loss_fn, has_aux=True)(
+        (loss, ae), grads = nnx.value_and_grad(self.loss_fn, has_aux=True)(
             state.model, batch_images, batch_illum, dtype
         )
 
@@ -82,11 +82,9 @@ class Trainer:
 
         state.global_step.value += 1
 
-        ae = jnp.degrees(jnp.arccos(jnp.clip(cos_sim, -1.0 + 1e-8, 1.0 - 1e-8)))
-
         return {
-            "train/loss": loss,  # scalar
-            "train/ae": ae,
+            "train/loss": ae,  # (B, )
+            "train/ae": jnp.degrees(ae),  # (B, )
             "train/lr": state.lr,
         }
 
@@ -96,12 +94,10 @@ class Trainer:
         pred_f32 = pred.astype(jnp.float32)
         illum_f32 = batch_illum.astype(jnp.float32)
 
-        # differentiable cosine distance as loss
-        # loss = jnp.mean(optax.losses.cosine_distance(pred_f32, illum_f32))
-        cos_sim = optax.cosine_similarity(pred_f32, illum_f32)
-        loss = jnp.mean(1.0 - cos_sim)
+        cos_sim = optax.losses.cosine_similarity(pred_f32, illum_f32, epsilon=1e-8)  # (B, )
+        ae = angular_error(cos_sim)
 
-        return loss, cos_sim
+        return jnp.mean(ae), ae  # (scalar, (B,))
 
     def eval_step(self, state: TrainState, batch_images, batch_illum, dtype) -> dict:
         pred = state.model(batch_images.astype(dtype), train=False)
@@ -109,11 +105,12 @@ class Trainer:
         illum_f32 = batch_illum.astype(jnp.float32)
         images_f32 = batch_images.astype(jnp.float32)
 
-        loss = optax.losses.cosine_distance(pred_f32, illum_f32)
+        cos_sim = optax.losses.cosine_similarity(pred_f32, illum_f32, epsilon=1e-8)  # (B, )
+        ae = angular_error(cos_sim)
 
         return {
-            "eval/loss": loss,
-            "eval/ae": jnp.degrees(angular_error(pred_f32, illum_f32)),  # (B,)
+            "eval/loss": ae,
+            "eval/ae": jnp.degrees(ae),
             "eval/rae": jnp.degrees(
                 jax.vmap(reproduction_angular_error)(  # (B,)
                     images_f32, pred_f32, illum_f32

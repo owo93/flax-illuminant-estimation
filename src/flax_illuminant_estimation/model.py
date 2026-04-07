@@ -92,7 +92,7 @@ class ViT(nnx.Module):
         depth=6,
         num_heads=6,
         mlp_ratio=4.0,
-        dropout_rate=0.0,
+        dropout_rate=0.1,
         rngs: nnx.Rngs,
     ):
         self.patch_embed = PatchEmbedding(
