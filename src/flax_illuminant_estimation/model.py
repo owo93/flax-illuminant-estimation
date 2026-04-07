@@ -34,14 +34,14 @@ class MLP(nnx.Module):
         self.fc1 = nnx.Linear(dim, mlp_dim, rngs=rngs)
         self.fc2 = nnx.Linear(mlp_dim, dim, rngs=rngs)
 
-        self.dropout = nnx.Dropout(dropout_rate)
+        self.dropout = nnx.Dropout(dropout_rate, rngs=rngs)
 
-    def __call__(self, x, *, train, rngs):
+    def __call__(self, x, *, train):
         x = self.fc1(x)
         x = nnx.gelu(x)
-        x = self.dropout(x, deterministic=not train, rngs=rngs)
+        x = self.dropout(x, deterministic=not train)
         x = self.fc2(x)
-        x = self.dropout(x, deterministic=not train, rngs=rngs)
+        x = self.dropout(x, deterministic=not train)
         return x
 
 
@@ -61,25 +61,19 @@ class Encoder(nnx.Module):
         )
 
         self.n2 = nnx.LayerNorm(dim, rngs=rngs)
-        self.mlp = MLP(dim, mlp_dim, dropout_rate, rngs)
+        self.mlp = MLP(dim, mlp_dim, dropout_rate, rngs=rngs)
 
-        self.dropout = nnx.Dropout(dropout_rate)
+        self.dropout = nnx.Dropout(dropout_rate, rngs=rngs)
 
-    def __call__(self, x, *, train, rngs):
+    def __call__(self, x, *, train):
         h = self.n1(x)
-        h = self.attn(
-            inputs_q=h,
-            inputs_k=h,
-            inputs_v=h,
-            deterministic=not train,
-            rngs=rngs,
-        )
+        h = self.attn(inputs_q=h, inputs_k=h, inputs_v=h, deterministic=not train)
 
-        h = self.dropout(h, deterministic=not train, rngs=rngs)
+        h = self.dropout(h, deterministic=not train)
         x += h
 
         h = self.n2(x)
-        h = self.mlp(h, train=train, rngs=rngs)
+        h = self.mlp(h, train=train)
 
         x += h
 
@@ -98,7 +92,7 @@ class ViT(nnx.Module):
         depth=6,
         num_heads=6,
         mlp_ratio=4.0,
-        dropout_rate=0.0,
+        dropout_rate=0.1,
         rngs: nnx.Rngs,
     ):
         self.patch_embed = PatchEmbedding(
@@ -111,17 +105,12 @@ class ViT(nnx.Module):
 
         self.head = nnx.Linear(dim, 3, rngs=rngs)
 
-    def __call__(self, x, *, train, rngs):
+    def __call__(self, x, *, train):
         x = self.patch_embed(x)
-
         for block in self.blocks:
-            x = block(x, train=train, rngs=rngs)
-
+            x = block(x, train=train)
         x = self.norm(x)
-
         feat = jnp.mean(x, axis=1)
-
         out = self.head(feat)
         out = nnx.softmax(out, axis=-1)
-
         return out

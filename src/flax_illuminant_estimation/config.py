@@ -19,18 +19,22 @@ class ModelConfig:
     dim: int = 384
     depth: int = 6
     num_heads: int = 6
+    assert img_size % patch_size == 0, "Image size must be divisible by patch size"
+    assert dim % num_heads == 0, "Dimension must be divisible by number of heads"
 
 
 @dataclass
 class TrainerConfig:
     batch_size: int = 32
     learning_rate: float = 1e-4
+    weight_decay: float = 5e-2
     epochs: int = 10
     seed: int = 42
     checkpoint_dir: Path = field(default_factory=lambda: Path("checkpoints"))
     precision: Literal["float16", "bfloat16", "float32"] = "float32"
     wandb: bool = False
     wandb_group: str = "A"
+    wandb_tags: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         if not isinstance(self.checkpoint_dir, Path):

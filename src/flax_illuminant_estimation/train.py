@@ -1,120 +1,28 @@
 import math
 import sys
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import optax
 from flax import nnx
+from rich import box
 from rich.console import Console, Group
 from rich.live import Live
 from rich.pretty import pprint
-from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 
 import wandb
 from data.loader import SimpleCubePPDataset
-from flax_illuminant_estimation.checkpoint import CheckpointState, load, save
+from flax_illuminant_estimation.checkpoint import CheckpointState, save
 from flax_illuminant_estimation.config import Config
+from flax_illuminant_estimation.lib import Trainer, TrainState, compute_metrics
 from flax_illuminant_estimation.model import ViT
-
-
-class TrainState:
-    def __init__(
-        self,
-        model: ViT,
-        optimizer: nnx.Optimizer,
-        schedule: optax.Schedule,
-        rngs: nnx.Rngs,
-        step: int,
-    ):
-        self.model = model
-        self.optimizer = optimizer
-        self.schedule = schedule
-        self.rngs = rngs
-        self.step = step
-
-
-@jax.jit
-def angular_loss(pred, target):
-    cos_sim = jnp.sum(pred * target, axis=-1) / (
-        jnp.linalg.norm(pred, axis=-1) * jnp.linalg.norm(target, axis=-1) + 1e-8
-    )
-    return jnp.arccos(jnp.clip(cos_sim, -1.0, 1.0))
-
-
-# https://doi.org/10.1109/TPAMI.2016.2582171
-def reproduction_angular_error(image, pred, gt):
-    rendered_pred = image / (pred + 1e-8)
-    rendered_gt = image / (gt + 1e-8)
-
-    rgb_pred = jnp.sum(rendered_pred, axis=(0, 1))
-    rgb_gt = jnp.sum(rendered_gt, axis=(0, 1))
-
-    cos_sim = jnp.dot(rgb_pred, rgb_gt) / (
-        jnp.linalg.norm(rgb_pred) * jnp.linalg.norm(rgb_gt) + 1e-8
-    )
-    return jnp.degrees(jnp.arccos(jnp.clip(cos_sim, -1.0, 1.0)))
-
-
-def create_lr_fn(config, steps_per_epoch):
-    total_steps = config.trainer.epochs * steps_per_epoch
-    warmup_steps = 3
-    return optax.warmup_cosine_decay_schedule(
-        init_value=0.0,
-        peak_value=config.trainer.learning_rate,
-        warmup_steps=warmup_steps * steps_per_epoch,
-        decay_steps=total_steps - warmup_steps * steps_per_epoch,
-        end_value=config.trainer.learning_rate * 0.01,
-    )
-
-
-def train_step(state: TrainState, batch_images, batch_illum, dtype):
-    def loss_fn(model):
-        images = batch_images.astype(dtype)
-        illuminants = batch_illum.astype(dtype)
-        predictions = model(images, train=True, rngs=state.rngs)
-        loss = angular_loss(predictions.astype(jnp.float32), illuminants.astype(jnp.float32))
-        return jnp.mean(loss)
-
-    loss, grads = nnx.value_and_grad(loss_fn)(state.model)
-    grads = jax.tree.map(lambda g: jnp.where(jnp.isnan(g), jnp.zeros_like(g), g), grads)
-    state.optimizer.update(state.model, grads)
-
-    return {
-        "train/loss": loss,
-        "train/lr": state.schedule(state.step),
-    }
-
-
-@nnx.jit
-def evaluate(model, rngs, batch_images, batch_illum):
-    pred = model(batch_images, train=False, rngs=rngs)
-    angular_error = angular_loss(pred, batch_illum)
-    repro_error = jax.vmap(reproduction_angular_error)(batch_images, pred, batch_illum)
-    return jnp.degrees(angular_error), repro_error
-
-
-def compute_metrics(errors):
-    n = len(errors)
-    sorted_e = jnp.sort(errors)
-    q1 = float(jnp.percentile(errors, 25))
-    q2 = float(jnp.percentile(errors, 50))
-    q3 = float(jnp.percentile(errors, 75))
-    return {
-        "mean": float(jnp.mean(errors)),
-        "median": q2,
-        "trimean": 0.25 * q1 + 0.5 * q2 + 0.25 * q3,
-        "best_25": float(jnp.mean(sorted_e[: n // 4])),
-        "worst_25": float(jnp.mean(sorted_e[n - n // 4 :])),
-        "worst": float(sorted_e[-1]),
-    }
-
-
-def model_metrics() -> nnx.MultiMetric:
-    return nnx.MultiMetric(
-        loss=nnx.metrics.Average("loss"),
-    )
 
 
 def main(args):
@@ -130,10 +38,8 @@ def main(args):
 
     steps_per_epoch = math.ceil(len(train_ds) / config.trainer.batch_size)
     total_steps = config.trainer.epochs * steps_per_epoch
-    schedule = create_lr_fn(config, steps_per_epoch)
 
     rngs = nnx.Rngs(config.trainer.seed)
-    rng_key = jax.random.key(config.trainer.seed)
     model = ViT(
         img_size=config.model.img_size,
         patch_size=config.model.patch_size,
@@ -143,156 +49,137 @@ def main(args):
         rngs=rngs,
     )
 
-    optimizer = nnx.Optimizer(
-        model,
-        optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.adamw(schedule, weight_decay=0.05),
-        ),
-        wrt=nnx.Param,
-    )
+    trainer = Trainer(config.trainer)
+    state: TrainState = trainer.create_train_state(model, steps_per_epoch)
 
-    if args.resume:
-        print(f"Resuming from checkpoint: {args.resume}")
-        checkpoint = Path(args.resume)
-        state = load(checkpoint)
-        nnx.update(model, state.model_state)
-        start_epoch = state.epoch
-        print(f"Resumed from epoch {start_epoch}")
-    else:
-        print("No checkpoint found, starting training from scratch")
-        start_epoch = 0
-
-    train_metrics = model_metrics()
+    # Logging
     use_wandb: bool = config.trainer.wandb
-
     if use_wandb:
         wandb.init(
             project="flax-illuminant-estimation",
             group=config.trainer.wandb_group,
-            tags=["Step", "IEC", "RE"],
+            tags=config.trainer.wandb_tags,
             config=config.to_dict() | {"total_steps": total_steps},
+            settings=wandb.Settings(console="off"),
         )
-
+        wandb.define_metric("step/*", step_metric="step/global")
+        wandb.define_metric("train/*", step_metric="epoch")
+        wandb.define_metric("eval/*", step_metric="epoch")
+        wandb.define_metric("iec/*", step_metric="epoch")
+        wandb.define_metric("repro/*", step_metric="epoch")
     print(
         f"Training on {jax.devices()} | Precision: {config.trainer.precision} ({config.trainer.dtype})"
     )
     pprint(config.to_dict(), expand_all=True, indent_guides=False)
 
     console = Console()
-    table = Table(title="Training Progress", expand=True, row_styles=["dim", ""], min_width=120)
-    [
-        table.add_column(x)
-        for x in [
-            "epoch",
-            "train_loss",
-            "ae_mean",
-            "ae_median",
-            "ae_trimean",
-            "ae_b25%",
-            "ae_w25%",
-            "ae_worst",
-            "rep_mean",
-            "rep_median",
-            "rep_trimean",
-            "rep_b25%",
-            "rep_w25%",
-            "rep_worst",
-        ]
-    ]
+    table = Table(
+        title="Training Progress",
+        expand=True,
+        row_styles=["", "dim"],
+        box=box.SIMPLE,
+        min_width=120,
+    )
+    table.add_column("epoch", justify="right", style="on black")
+    table.add_column("train_loss")
+    table.add_column("train_ae", style="cyan")
+    table.add_column("eval_loss")
+    table.add_column("eval_ae", style="cyan")
+    table.add_column("eval_rae")
+
     progress = Progress(
-        TimeElapsedColumn(),
+        MofNCompleteColumn(),
         TextColumn("{task.description}"),
         BarColumn(),
         TimeRemainingColumn(),
         console=console,
     )
     task = progress.add_task("Train", total=steps_per_epoch)
+    train_metrics = Trainer.train_metrics()
+    eval_metrics = Trainer.eval_metrics()
 
     with Live(Group(table, progress), console=console, refresh_per_second=4):
-        for epoch in range(start_epoch, config.trainer.epochs):
+        for epoch in range(0, config.trainer.epochs):
             train_metrics.reset()
+            eval_metrics.reset()
             progress.reset(task)
             progress.update(
-                task, description=f"epoch {epoch + 1}/{config.trainer.epochs}: training..."
+                task,
+                description=f"epoch [u bold green]{epoch + 1}/{config.trainer.epochs}: training...",
             )
 
-            # Train
+            # Training
             for i, (batch_images, batch_illum) in enumerate(
                 train_ds.batches(config.trainer.batch_size)
             ):
-                rng_key, params_key, dropout_key = jax.random.split(rng_key, num=3)
-                train_state = TrainState(
-                    model=model,
-                    optimizer=optimizer,
-                    schedule=schedule,
-                    rngs=nnx.Rngs(params=params_key, dropout=dropout_key),
-                    step=epoch * steps_per_epoch + i,
+                step: dict = trainer.train_step(
+                    state, batch_images, batch_illum, config.trainer.dtype
                 )
+                train_metrics.update(loss=step["train/loss"], ae=step["train/ae"])
 
-                step_metrics = train_step(
-                    train_state,
-                    batch_images,
-                    batch_illum,
-                    config.trainer.dtype,
-                )
+                # NOTE: .compute() here accumulates the metrics across all batches in this epoch
+                _m = train_metrics.compute()
 
-                train_metrics.update(loss=step_metrics["train/loss"])
-                m = train_metrics.compute()
-
-                if use_wandb:
-                    wandb.define_metric("step/*", step_metric="step/global")
+                if use_wandb and i % 5 == 0:
                     wandb.log(
                         {
-                            "step/global": train_state.step,
-                            "step/loss": float(step_metrics["train/loss"]),
-                            "step/lr": float(step_metrics["train/lr"]),
+                            "step/global": state.global_step.value,
+                            "step/loss": float(jnp.mean(step["train/loss"])),
+                            "step/lr": float(step["train/lr"]),
                         },
                     )
 
                 progress.update(
                     task,
                     advance=1,
-                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss {float(m['loss']):.7f} \u2192 {jnp.degrees(float(m['loss'])):.3f}\xb0",
+                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss \u2192 [i bold cyan]{float(_m['loss']):.7f}",
                 )
 
-            # Eval
-            eval_rngs = nnx.Rngs(dropout=jax.random.key(0))
-
-            all_ae = []
-            all_repro = []
+            # Evaluation
+            all_ae, all_repro = [], []
 
             for batch_images, batch_illum in test_ds.batches(
                 config.trainer.batch_size, shuffle=False
             ):
-                angular_error, repro_error = evaluate(model, eval_rngs, batch_images, batch_illum)
-                all_ae.append(angular_error)
-                all_repro.append(repro_error)
+                step: dict = trainer.eval_step(
+                    state, batch_images, batch_illum, config.trainer.dtype
+                )
+                all_ae.append(step["eval/ae"])
+                all_repro.append(step["eval/rae"])
+                eval_metrics.update(
+                    loss=step["eval/loss"],
+                    ae=step["eval/ae"],
+                    rae=step["eval/rae"],
+                )
 
+            # Full distribution stats
             all_ae = jnp.concatenate(all_ae, axis=0)
             all_repro = jnp.concatenate(all_repro, axis=0)
-
-            errors = {"angular": compute_metrics(all_ae), "repro": compute_metrics(all_repro)}
+            errors = {
+                "angular": compute_metrics(all_ae),
+                "repro": compute_metrics(all_repro),
+            }
 
             train_m = train_metrics.compute()
+            eval_m = eval_metrics.compute()
 
             graphdef, model_state = nnx.split(model)
-            state = CheckpointState(
+            ckpt = CheckpointState(
                 graphdef=graphdef,
                 model_state=model_state,
                 epoch=epoch + 1,
                 config=config.to_dict(),
             )
-            save(state, config.trainer.checkpoint_dir)
+            save(ckpt, config.trainer.checkpoint_dir)
 
             if use_wandb:
-                wandb.define_metric("train/*", step_metric="epoch")
-                wandb.define_metric("iec/*", step_metric="epoch")
-                wandb.define_metric("repro/*", step_metric="epoch")
                 wandb.log(
                     {
                         "train/loss": float(train_m["loss"]),
-                        "train/loss_deg": float(jnp.degrees(train_m["loss"])),
+                        "train/ae": float(train_m["ae"]),
+                        "eval/loss": float(eval_m["loss"]),
+                        "eval/ae": float(eval_m["ae"]),
+                        "eval/rae": float(eval_m["rae"]),
                         "iec/mean": errors["angular"]["mean"],
                         "iec/median": errors["angular"]["median"],
                         "iec/trimean": errors["angular"]["trimean"],
@@ -311,19 +198,11 @@ def main(args):
 
             table.add_row(
                 f"{str(epoch + 1).zfill(2)}",
-                f"{jnp.degrees(train_m['loss']):.3f}\xb0",
-                f"{errors['angular']['mean']:.2f}\xb0",
-                f"{errors['angular']['median']:.2f}\xb0",
-                f"{errors['angular']['trimean']:.2f}\xb0",
-                f"{errors['angular']['best_25']:.2f}\xb0",
-                f"{errors['angular']['worst_25']:.2f}\xb0",
-                f"{errors['angular']['worst']:.2f}\xb0",
-                f"{errors['repro']['mean']:.4f}",
-                f"{errors['repro']['median']:.4f}",
-                f"{errors['repro']['trimean']:.4f}",
-                f"{errors['repro']['best_25']:.4f}",
-                f"{errors['repro']['worst_25']:.4f}",
-                f"{errors['repro']['worst']:.4f}",
+                f"{float(train_m['loss']):.6f}",
+                f"{float(train_m['ae']):.3f}\xb0",
+                f"{float(eval_m['loss']):.6f}",
+                f"{float(eval_m['ae']):.3f}\xb0",
+                f"{float(eval_m['rae']):.3f}\xb0",
             )
 
         if use_wandb:
