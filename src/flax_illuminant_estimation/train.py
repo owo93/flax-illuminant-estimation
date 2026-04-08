@@ -21,7 +21,15 @@ import wandb
 from data.loader import SimpleCubePPDataset
 from flax_illuminant_estimation.checkpoint import CheckpointState, save
 from flax_illuminant_estimation.config import Config
-from flax_illuminant_estimation.lib import Trainer, TrainState, compute_metrics
+from flax_illuminant_estimation.lib import (
+    Trainer,
+    TrainState,
+    compute_metrics,
+    create_train_metrics,
+    eval_step,
+    train_step,
+)
+from flax_illuminant_estimation.lib.trainer import create_eval_metrics
 from flax_illuminant_estimation.model import ViT
 
 
@@ -92,8 +100,8 @@ def main(args):
         console=console,
     )
     task = progress.add_task("Train", total=steps_per_epoch)
-    train_metrics = Trainer.train_metrics()
-    eval_metrics = Trainer.eval_metrics()
+    train_metrics = create_train_metrics()
+    eval_metrics = create_eval_metrics()
 
     with Live(Group(table, progress), console=console, refresh_per_second=4):
         for epoch in range(0, config.trainer.epochs):
@@ -109,8 +117,8 @@ def main(args):
             for i, (batch_images, batch_illum) in enumerate(
                 train_ds.batches(config.trainer.batch_size)
             ):
-                step: dict = trainer.train_step(
-                    state, batch_images, batch_illum, config.trainer.dtype
+                step: dict = train_step(
+                    state, model, batch_images, batch_illum, config.trainer.dtype
                 )
                 train_metrics.update(loss=step["train/loss"], ae=step["train/ae"])
 
@@ -120,7 +128,7 @@ def main(args):
                 if use_wandb and i % 5 == 0:
                     wandb.log(
                         {
-                            "step/global": state.global_step.value,
+                            "step/global": state.step.value,
                             "step/loss": float(jnp.mean(step["train/loss"])),
                             "step/lr": float(step["train/lr"]),
                         },
@@ -138,9 +146,7 @@ def main(args):
             for batch_images, batch_illum in test_ds.batches(
                 config.trainer.batch_size, shuffle=False
             ):
-                step: dict = trainer.eval_step(
-                    state, batch_images, batch_illum, config.trainer.dtype
-                )
+                step: dict = eval_step(model, batch_images, batch_illum, config.trainer.dtype)
                 all_ae.append(step["eval/ae"])
                 all_repro.append(step["eval/rae"])
                 eval_metrics.update(
