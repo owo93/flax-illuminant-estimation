@@ -1,9 +1,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-import flax.training.orbax_utils
 import orbax.checkpoint as ocp
 from flax import nnx
+from flax.training import orbax_utils
 
 
 @dataclass
@@ -29,7 +29,7 @@ def save(state: CheckpointState, checkpoint_dir: Path):
     _checkpointer.save(
         step_dir,
         ckpt,
-        save_args=flax.training.orbax_utils.save_args_from_target(ckpt),
+        save_args=orbax_utils.save_args_from_target(ckpt),
         force=True,
         custom_metadata={"epoch": state.epoch, "config": state.config},
     )

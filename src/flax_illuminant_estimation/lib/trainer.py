@@ -8,38 +8,16 @@ from flax_illuminant_estimation.lib import angular_error, reproduction_angular_e
 from flax_illuminant_estimation.model import ViT
 
 
-def compute_metrics(errors):
-    n = len(errors)
-    sorted_e = jnp.sort(errors)
-    q1 = float(jnp.percentile(errors, 25).squeeze())
-    q2 = float(jnp.percentile(errors, 50).squeeze())
-    q3 = float(jnp.percentile(errors, 75).squeeze())
-    return {
-        "mean": float(jnp.mean(errors)),
-        "median": q2,
-        "trimean": 0.25 * q1 + 0.5 * q2 + 0.25 * q3,
-        "best_25": float(jnp.mean(sorted_e[: n // 4])),
-        "worst_25": float(jnp.mean(sorted_e[n - n // 4 :])),
-        "worst": float(sorted_e[-1].squeeze()),
-    }
-
-
 # subclass nnx.Optimizer to directly call .update()
 class TrainState(nnx.Optimizer):
-    def __init__(
-        self,
-        model: ViT,
-        tx: optax.GradientTransformation,
-        schedule: optax.Schedule,
-    ):
+    def __init__(self, model: ViT, tx: optax.GradientTransformation, schedule: optax.Schedule):
         super().__init__(model, tx, wrt=nnx.Param)
         self.schedule = schedule
-        self.global_step = nnx.Variable(0)
         self.model = model
 
     @property
     def lr(self):
-        return self.schedule(self.global_step.value)
+        return self.schedule(self.step.value)
 
 
 class Trainer:
@@ -70,62 +48,67 @@ class Trainer:
 
         return TrainState(model, tx, schedule)
 
-    def train_step(
-        self, state: TrainState, batch_images: jnp.ndarray, batch_illum: jnp.ndarray, dtype
-    ):
-        (loss, ae), grads = nnx.value_and_grad(self.loss_fn, has_aux=True)(
-            state.model, batch_images, batch_illum, dtype
-        )
 
-        grads = jax.tree.map(lambda g: jnp.where(jnp.isnan(g), jnp.zeros_like(g), g), grads)
-        state.update(state.model, grads)
-
-        state.global_step.value += 1
-
-        return {
-            "train/loss": ae,  # (B, )
-            "train/ae": jnp.degrees(ae),  # (B, )
-            "train/lr": state.lr,
-        }
-
-    @staticmethod
-    def loss_fn(model: ViT, batch_images: jnp.ndarray, batch_illum: jnp.ndarray, dtype):
+@nnx.jit(static_argnames=("dtype",))
+def train_step(state: TrainState, model: ViT, batch_images, batch_illum, dtype):
+    def loss_fn(model: ViT):
         pred = model(batch_images.astype(dtype), train=True)
         pred_f32 = pred.astype(jnp.float32)
         illum_f32 = batch_illum.astype(jnp.float32)
-
-        cos_sim = optax.losses.cosine_similarity(pred_f32, illum_f32, epsilon=1e-8)  # (B, )
+        cos_sim = optax.losses.cosine_similarity(pred_f32, illum_f32, epsilon=1e-8)
         ae = angular_error(cos_sim)
+        return jnp.mean(ae), ae
 
-        return jnp.mean(ae), ae  # (scalar, (B,))
+    (loss, ae), grads = nnx.value_and_grad(loss_fn, has_aux=True)(model)
+    grads = jax.tree.map(lambda g: jnp.where(jnp.isnan(g), jnp.zeros_like(g), g), grads)
+    state.update(model, grads)
+    return {
+        "train/loss": ae,  # (B, )
+        "train/ae": jnp.degrees(ae),
+        "train/lr": state.lr,
+    }
 
-    def eval_step(self, state: TrainState, batch_images, batch_illum, dtype) -> dict:
-        pred = state.model(batch_images.astype(dtype), train=False)
-        pred_f32 = pred.astype(jnp.float32)
-        illum_f32 = batch_illum.astype(jnp.float32)
-        images_f32 = batch_images.astype(jnp.float32)
 
-        cos_sim = optax.losses.cosine_similarity(pred_f32, illum_f32, epsilon=1e-8)  # (B, )
-        ae = angular_error(cos_sim)
+@nnx.jit(static_argnames=("dtype",))
+def eval_step(model: ViT, batch_images, batch_illum, dtype) -> dict:
+    pred = model(batch_images.astype(dtype), train=False)
+    pred_f32 = pred.astype(jnp.float32)
+    illum_f32 = batch_illum.astype(jnp.float32)
+    images_f32 = batch_images.astype(jnp.float32)
+    cos_sim = optax.losses.cosine_similarity(pred_f32, illum_f32, epsilon=1e-8)
+    ae = angular_error(cos_sim)
+    return {
+        "eval/loss": ae,  # (B, )
+        "eval/ae": jnp.degrees(ae),
+        "eval/rae": jnp.degrees(
+            jax.vmap(reproduction_angular_error)(images_f32, pred_f32, illum_f32)
+        ),
+    }
 
-        return {
-            "eval/loss": ae,
-            "eval/ae": jnp.degrees(ae),
-            "eval/rae": jnp.degrees(
-                jax.vmap(reproduction_angular_error)(  # (B,)
-                    images_f32, pred_f32, illum_f32
-                )
-            ),
-        }
 
-    @staticmethod
-    def eval_metrics() -> nnx.MultiMetric:
-        return nnx.MultiMetric(
-            loss=nnx.metrics.Average("loss"),
-            ae=nnx.metrics.Average("ae"),
-            rae=nnx.metrics.Average("rae"),
-        )
+def create_eval_metrics() -> nnx.MultiMetric:
+    return nnx.MultiMetric(
+        loss=nnx.metrics.Average("loss"),
+        ae=nnx.metrics.Average("ae"),
+        rae=nnx.metrics.Average("rae"),
+    )
 
-    @staticmethod
-    def train_metrics() -> nnx.MultiMetric:
-        return nnx.MultiMetric(loss=nnx.metrics.Average("loss"), ae=nnx.metrics.Average("ae"))
+
+def create_train_metrics() -> nnx.MultiMetric:
+    return nnx.MultiMetric(loss=nnx.metrics.Average("loss"), ae=nnx.metrics.Average("ae"))
+
+
+def compute_metrics(errors):
+    n = len(errors)
+    sorted_e = jnp.sort(errors)
+    q1 = float(jnp.percentile(errors, 25).squeeze())
+    q2 = float(jnp.percentile(errors, 50).squeeze())
+    q3 = float(jnp.percentile(errors, 75).squeeze())
+    return {
+        "mean": float(jnp.mean(errors)),
+        "median": q2,
+        "trimean": 0.25 * q1 + 0.5 * q2 + 0.25 * q3,
+        "best_25": float(jnp.mean(sorted_e[: n // 4])),
+        "worst_25": float(jnp.mean(sorted_e[n - n // 4 :])),
+        "worst": float(sorted_e[-1].squeeze()),
+    }

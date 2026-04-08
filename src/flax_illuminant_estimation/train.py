@@ -1,8 +1,8 @@
 import math
-import sys
 
 import jax
 import jax.numpy as jnp
+from absl import flags
 from flax import nnx
 from rich import box
 from rich.console import Console, Group
@@ -21,13 +21,23 @@ import wandb
 from data.loader import SimpleCubePPDataset
 from flax_illuminant_estimation.checkpoint import CheckpointState, save
 from flax_illuminant_estimation.config import Config
-from flax_illuminant_estimation.lib import Trainer, TrainState, compute_metrics
+from flax_illuminant_estimation.lib import (
+    Trainer,
+    TrainState,
+    compute_metrics,
+    create_train_metrics,
+    eval_step,
+    train_step,
+)
+from flax_illuminant_estimation.lib.trainer import create_eval_metrics
 from flax_illuminant_estimation.model import ViT
 
+FLAGS = flags.FLAGS
 
-def main(args):
-    if args.config:
-        config = Config.from_yaml(args.config)
+
+def main():
+    if FLAGS.config:
+        config = Config.from_yaml(FLAGS.config)
     else:
         config = Config()
 
@@ -36,8 +46,9 @@ def main(args):
     train_ds = SimpleCubePPDataset("train", seed=config.trainer.seed)
     test_ds = SimpleCubePPDataset("test", seed=config.trainer.seed + 1)
 
-    steps_per_epoch = math.ceil(len(train_ds) / config.trainer.batch_size)
-    total_steps = config.trainer.epochs * steps_per_epoch
+    train_steps = math.ceil(len(train_ds) / config.trainer.batch_size)
+    eval_steps = math.ceil(len(test_ds) / config.trainer.batch_size)
+    total_steps = config.trainer.epochs * train_steps
 
     rngs = nnx.Rngs(config.trainer.seed)
     model = ViT(
@@ -48,9 +59,10 @@ def main(args):
         num_heads=config.model.num_heads,
         rngs=rngs,
     )
+    graphdef, _ = nnx.split(model)
 
     trainer = Trainer(config.trainer)
-    state: TrainState = trainer.create_train_state(model, steps_per_epoch)
+    state: TrainState = trainer.create_train_state(model, train_steps)
 
     # Logging
     use_wandb: bool = config.trainer.wandb
@@ -67,9 +79,6 @@ def main(args):
         wandb.define_metric("eval/*", step_metric="epoch")
         wandb.define_metric("iec/*", step_metric="epoch")
         wandb.define_metric("repro/*", step_metric="epoch")
-    print(
-        f"Training on {jax.devices()} | Precision: {config.trainer.precision} ({config.trainer.dtype})"
-    )
     pprint(config.to_dict(), expand_all=True, indent_guides=False)
 
     console = Console()
@@ -94,26 +103,32 @@ def main(args):
         TimeRemainingColumn(),
         console=console,
     )
-    task = progress.add_task("Train", total=steps_per_epoch)
-    train_metrics = Trainer.train_metrics()
-    eval_metrics = Trainer.eval_metrics()
+    train = progress.add_task("Train", total=train_steps)
+    eval = progress.add_task("Evaluation", total=eval_steps)
+    train_metrics = create_train_metrics()
+    eval_metrics = create_eval_metrics()
 
     with Live(Group(table, progress), console=console, refresh_per_second=4):
         for epoch in range(0, config.trainer.epochs):
             train_metrics.reset()
             eval_metrics.reset()
-            progress.reset(task)
+            progress.reset(train)
+            progress.reset(eval)
             progress.update(
-                task,
+                train,
                 description=f"epoch [u bold green]{epoch + 1}/{config.trainer.epochs}: training...",
+            )
+            progress.update(
+                eval,
+                description="[red]evaluating...",
             )
 
             # Training
             for i, (batch_images, batch_illum) in enumerate(
                 train_ds.batches(config.trainer.batch_size)
             ):
-                step: dict = trainer.train_step(
-                    state, batch_images, batch_illum, config.trainer.dtype
+                step: dict = train_step(
+                    state, model, batch_images, batch_illum, config.trainer.dtype
                 )
                 train_metrics.update(loss=step["train/loss"], ae=step["train/ae"])
 
@@ -123,14 +138,14 @@ def main(args):
                 if use_wandb and i % 5 == 0:
                     wandb.log(
                         {
-                            "step/global": state.global_step.value,
+                            "step/global": state.step.value,
                             "step/loss": float(jnp.mean(step["train/loss"])),
                             "step/lr": float(step["train/lr"]),
                         },
                     )
 
                 progress.update(
-                    task,
+                    train,
                     advance=1,
                     description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss \u2192 [i bold cyan]{float(_m['loss']):.7f}",
                 )
@@ -141,15 +156,21 @@ def main(args):
             for batch_images, batch_illum in test_ds.batches(
                 config.trainer.batch_size, shuffle=False
             ):
-                step: dict = trainer.eval_step(
-                    state, batch_images, batch_illum, config.trainer.dtype
-                )
+                step: dict = eval_step(model, batch_images, batch_illum, config.trainer.dtype)
                 all_ae.append(step["eval/ae"])
                 all_repro.append(step["eval/rae"])
                 eval_metrics.update(
                     loss=step["eval/loss"],
                     ae=step["eval/ae"],
                     rae=step["eval/rae"],
+                )
+
+                _m = eval_metrics.compute()
+
+                progress.update(
+                    eval,
+                    advance=1,
+                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: eval loss \u2192 [i bold magenta]{float(_m['loss']):.7f}",
                 )
 
             # Full distribution stats
@@ -163,7 +184,7 @@ def main(args):
             train_m = train_metrics.compute()
             eval_m = eval_metrics.compute()
 
-            graphdef, model_state = nnx.split(model)
+            model_state = nnx.state(model)
             ckpt = CheckpointState(
                 graphdef=graphdef,
                 model_state=model_state,
@@ -210,4 +231,4 @@ def main(args):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main()

@@ -1,29 +1,42 @@
-import argparse
+import os
+
+import jax
+from absl import app, flags, logging
 
 from . import infer, train
 
+os.environ["XLA_FLAGS"] = (
+    "--xla_gpu_autotune_level=2 "
+    "--xla_gpu_enable_async_all_reduce=true "
+    "--xla_gpu_deterministic_reductions=false "
+    "--xla_gpu_enable_async_all_gather=true "
+    "--xla_gpu_max_kernel_unroll=32"
+)
 
-def main():
-    parser = argparse.ArgumentParser(description="Illuminant estimation with NNX")
-    subparser = parser.add_subparsers(dest="command", help="command", required=True)
+FLAGS = flags.FLAGS
+logging.set_verbosity(logging.DEBUG)
 
-    train_parser = subparser.add_parser("train", help="train model")
-    train_parser.add_argument("--config", help="path to config file")
+flags.DEFINE_enum("command", None, ["train", "infer"], "command to run")
 
-    infer_parser = subparser.add_parser("infer", help="run inference")
+flags.DEFINE_string("config", "config.yaml", "path to config.yaml")
 
-    infer_parser.add_argument("image", help="path to input image")
-    infer_parser.add_argument("--checkpoint", help="path to checkpoint (defaults to latest)")
-    infer_parser.add_argument("--config", help="path to config file")
-
-    args = parser.parse_args()
-    if args.command == "train":
-        train.main(args)
-    elif args.command == "infer":
-        infer.main(args)
-    else:
-        parser.print_help()
+flags.DEFINE_string("image", None, "path to input image")
+flags.DEFINE_string("checkpoint", None, "path to save checkpoint")
 
 
-if __name__ == "__main__":
-    main()
+def main(argv):
+    if len(argv) < 1:
+        raise ValueError("No command specified. Use --command to specify train or infer.")
+
+    logging.info(f"found device: {jax.local_devices()[0].platform}")
+
+    if argv[1] == "train":
+        train.main()
+    elif argv[1] == "infer":
+        if FLAGS.image is None:
+            raise ValueError("--image must be specified for infer command")
+        infer.main()
+
+
+def run():
+    app.run(main)

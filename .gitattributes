@@ -1,1 +1,2 @@
 config.yaml.example text eol=lf linguist-language=YAML
+* text eol=lf
