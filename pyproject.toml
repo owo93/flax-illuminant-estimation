@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 authors = [{ name = "owo93", email = "iztyle30@gmail.com" }]
 dependencies = [
+  "absl-py>=2.4.0",
   "flax[cuda]>=0.12.3",
   "jax[cuda13]>=0.9.0.1",
   "orbax>=0.1.9",
@@ -18,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-illum = "flax_illuminant_estimation:main"
+illum = "flax_illuminant_estimation:run"
 
 [dependency-groups]
 dev = [

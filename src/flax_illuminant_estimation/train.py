@@ -1,8 +1,8 @@
 import math
-import sys
 
 import jax
 import jax.numpy as jnp
+from absl import flags
 from flax import nnx
 from rich import box
 from rich.console import Console, Group
@@ -32,10 +32,12 @@ from flax_illuminant_estimation.lib import (
 from flax_illuminant_estimation.lib.trainer import create_eval_metrics
 from flax_illuminant_estimation.model import ViT
 
+FLAGS = flags.FLAGS
 
-def main(args):
-    if args.config:
-        config = Config.from_yaml(args.config)
+
+def main():
+    if FLAGS.config:
+        config = Config.from_yaml(FLAGS.config)
     else:
         config = Config()
 
@@ -229,4 +231,4 @@ def main(args):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    main()

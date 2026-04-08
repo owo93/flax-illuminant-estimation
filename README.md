@@ -20,18 +20,11 @@ src/
 ### Training
 To train model with given hyperparameters:
 ```bash
-uv run illum train --config <path_to_config>
+illum train --config "path_to_config"
 ```
-or resume from a checkpoint:
-```bash
-uv run illum train --resume <path_to_checkpoint>
-```
-- each run is automatically logged to W&B
-- restored runs are also treated as new runs
-
 
 ### Inference
 To infer illuminant chromaticities on an image:
 ```bash
-uv run illum infer <path_to_img> --checkpoint <path_to_checkpoint>
+illum infer --image "path_to_image" --checkpoint "path_to_checkpoint"
 ```
