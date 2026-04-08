@@ -44,8 +44,9 @@ def main(args):
     train_ds = SimpleCubePPDataset("train", seed=config.trainer.seed)
     test_ds = SimpleCubePPDataset("test", seed=config.trainer.seed + 1)
 
-    steps_per_epoch = math.ceil(len(train_ds) / config.trainer.batch_size)
-    total_steps = config.trainer.epochs * steps_per_epoch
+    train_steps = math.ceil(len(train_ds) / config.trainer.batch_size)
+    eval_steps = math.ceil(len(test_ds) / config.trainer.batch_size)
+    total_steps = config.trainer.epochs * train_steps
 
     rngs = nnx.Rngs(config.trainer.seed)
     model = ViT(
@@ -56,9 +57,10 @@ def main(args):
         num_heads=config.model.num_heads,
         rngs=rngs,
     )
+    graphdef, _ = nnx.split(model)
 
     trainer = Trainer(config.trainer)
-    state: TrainState = trainer.create_train_state(model, steps_per_epoch)
+    state: TrainState = trainer.create_train_state(model, train_steps)
 
     # Logging
     use_wandb: bool = config.trainer.wandb
@@ -99,7 +101,8 @@ def main(args):
         TimeRemainingColumn(),
         console=console,
     )
-    task = progress.add_task("Train", total=steps_per_epoch)
+    train = progress.add_task("Train", total=train_steps)
+    eval = progress.add_task("Evaluation", total=eval_steps)
     train_metrics = create_train_metrics()
     eval_metrics = create_eval_metrics()
 
@@ -107,10 +110,15 @@ def main(args):
         for epoch in range(0, config.trainer.epochs):
             train_metrics.reset()
             eval_metrics.reset()
-            progress.reset(task)
+            progress.reset(train)
+            progress.reset(eval)
             progress.update(
-                task,
+                train,
                 description=f"epoch [u bold green]{epoch + 1}/{config.trainer.epochs}: training...",
+            )
+            progress.update(
+                eval,
+                description="[red]evaluating...",
             )
 
             # Training
@@ -135,7 +143,7 @@ def main(args):
                     )
 
                 progress.update(
-                    task,
+                    train,
                     advance=1,
                     description=f"epoch {epoch + 1}/{config.trainer.epochs}: train loss \u2192 [i bold cyan]{float(_m['loss']):.7f}",
                 )
@@ -155,6 +163,14 @@ def main(args):
                     rae=step["eval/rae"],
                 )
 
+                _m = eval_metrics.compute()
+
+                progress.update(
+                    eval,
+                    advance=1,
+                    description=f"epoch {epoch + 1}/{config.trainer.epochs}: eval loss \u2192 [i bold magenta]{float(_m['loss']):.7f}",
+                )
+
             # Full distribution stats
             all_ae = jnp.concatenate(all_ae, axis=0)
             all_repro = jnp.concatenate(all_repro, axis=0)
@@ -166,7 +182,7 @@ def main(args):
             train_m = train_metrics.compute()
             eval_m = eval_metrics.compute()
 
-            graphdef, model_state = nnx.split(model)
+            model_state = nnx.state(model)
             ckpt = CheckpointState(
                 graphdef=graphdef,
                 model_state=model_state,
