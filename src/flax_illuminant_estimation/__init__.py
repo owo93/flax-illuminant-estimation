@@ -1,6 +1,17 @@
 import argparse
+import os
+
+import jax
 
 from . import infer, train
+
+os.environ["XLA_FLAGS"] = (
+    "--xla_gpu_autotune_level=2 "
+    "--xla_gpu_enable_async_all_reduce=true "
+    "--xla_gpu_deterministic_reductions=false "
+    "--xla_gpu_enable_async_all_gather=true "
+    "--xla_gpu_max_kernel_unroll=32"
+)
 
 
 def main():
@@ -17,6 +28,9 @@ def main():
     infer_parser.add_argument("--config", help="path to config file")
 
     args = parser.parse_args()
+
+    print(f"Found devices: {jax.local_devices()[0].platform}")
+
     if args.command == "train":
         train.main(args)
     elif args.command == "infer":

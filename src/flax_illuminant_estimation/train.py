@@ -67,9 +67,6 @@ def main(args):
         wandb.define_metric("eval/*", step_metric="epoch")
         wandb.define_metric("iec/*", step_metric="epoch")
         wandb.define_metric("repro/*", step_metric="epoch")
-    print(
-        f"Training on {jax.devices()} | Precision: {config.trainer.precision} ({config.trainer.dtype})"
-    )
     pprint(config.to_dict(), expand_all=True, indent_guides=False)
 
     console = Console()
