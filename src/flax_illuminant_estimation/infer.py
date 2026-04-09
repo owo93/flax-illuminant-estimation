@@ -71,7 +71,7 @@ def main():
     pred = estimate_illuminant(model, FLAGS.image)
 
     r, g, b = float(pred[0]), float(pred[1]), float(pred[2])
-    print(f"Chromaticity: {r:.4f}, {g:.4f}, {b:.4f}")
+    print(f"Chromaticity: {r:.8f}, {g:.8f}, {b:.8f}")
     print(f"RGB: rgb({r * 255:.0f}, {g * 255:.0f}, {b * 255:.0f})")
 
 
