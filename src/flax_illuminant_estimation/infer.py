@@ -14,14 +14,11 @@ from flax_illuminant_estimation.model import ViT
 FLAGS = flags.FLAGS
 
 
-def preprocess_image(path):
-    img = Image.open(path).convert("RGB")
+def estimate_illuminant(model, image_path, img_size):
+    img = Image.open(image_path).convert("RGB")
+    img = img.resize((img_size, img_size), Image.Resampling.LANCZOS)
     img = jnp.array(img, dtype=jnp.float32) / 255.0
-    return img
 
-
-def estimate_illuminant(model, image_path):
-    img = preprocess_image(image_path)
     img_batch = jnp.expand_dims(img, axis=0)
     pred = model(img_batch, train=False)
     return pred[0]
@@ -67,7 +64,7 @@ def main():
     print(f"\nRestored from checkpoint at epoch {state.epoch}")
 
     print(f"\nEstimating illuminant for: {FLAGS.image}")
-    pred = estimate_illuminant(model, FLAGS.image)
+    pred = estimate_illuminant(model, FLAGS.image, config.model.img_size)
 
     r, g, b = float(pred[0]), float(pred[1]), float(pred[2])
     print(f"Chromaticity: {r:.8f}, {g:.8f}, {b:.8f}")
