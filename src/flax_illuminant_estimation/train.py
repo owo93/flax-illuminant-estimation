@@ -43,8 +43,12 @@ def main():
 
     jax.config.update("jax_default_matmul_precision", "high")
 
-    train_ds = SimpleCubePPDataset("train", seed=config.trainer.seed)
-    test_ds = SimpleCubePPDataset("test", seed=config.trainer.seed + 1)
+    train_ds = SimpleCubePPDataset(
+        "train", seed=config.trainer.seed, img_size=config.model.img_size
+    )
+    test_ds = SimpleCubePPDataset(
+        "test", seed=config.trainer.seed + 1, img_size=config.model.img_size
+    )
 
     train_steps = math.ceil(len(train_ds) / config.trainer.batch_size)
     eval_steps = math.ceil(len(test_ds) / config.trainer.batch_size)

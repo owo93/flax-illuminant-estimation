@@ -14,9 +14,8 @@ from flax_illuminant_estimation.model import ViT
 FLAGS = flags.FLAGS
 
 
-def preprocess_image(path, size=224):
+def preprocess_image(path):
     img = Image.open(path).convert("RGB")
-    img = img.resize((size, size), Image.Resampling.LANCZOS)
     img = jnp.array(img, dtype=jnp.float32) / 255.0
     return img
 

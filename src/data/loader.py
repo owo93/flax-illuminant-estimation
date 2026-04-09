@@ -38,12 +38,13 @@ batched_augment = jax.jit(jax.vmap(augment, in_axes=(0, 0)))
 
 
 class SimpleCubePPDataset:
-    def __init__(self, split, root=None, seed=42):
+    def __init__(self, split, root=None, seed=42, img_size=224):
         self.root = Path(__file__).parent / "SimpleCube++"
         self.split = split
         self.augment = split == "train"
         self.key = random.key(seed)
         self.samples = self._load_split(split)
+        self.img_size = img_size
 
     def _load_split(self, split):
         split_root = self.root / split
@@ -71,7 +72,7 @@ class SimpleCubePPDataset:
     def __getitem__(self, idx):
         sample = self.samples[idx]
         img = Image.open(sample["image_path"]).convert("RGB")
-        img = img.resize((224, 224), Image.Resampling.LANCZOS)
+        img = img.resize((self.img_size, self.img_size), Image.Resampling.LANCZOS)
         img = jnp.array(img, dtype=jnp.float32) / 255.0
 
         return img, sample["illuminant"]
