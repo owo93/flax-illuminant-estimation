@@ -14,7 +14,7 @@ os.environ["XLA_FLAGS"] = (
 )
 
 FLAGS = flags.FLAGS
-logging.set_verbosity(logging.DEBUG)
+logging.set_verbosity(logging.INFO)
 
 flags.DEFINE_enum("command", None, ["train", "infer"], "command to run")
 
