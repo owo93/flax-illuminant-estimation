@@ -1,14 +1,20 @@
 model:
     img_size: 224
-    patch_size: 14
+    patch_size: 16
     dim: 384
-    depth: 4
+    depth: 8
     num_heads: 8
+    dropout_rate: 0.1
 trainer:
     batch_size: 32
     learning_rate: 0.0002
-    epochs: 10
-    seed: 67
-    checkpoint_dir: ckpt
-    precision: bfloat16
-    wandb: False
+    weight_decay: 0.05
+    epochs: 50
+    seed: 42
+    checkpoint_dir: checkpoints
+    precision: float32
+    wandb: True
+    wandb_group: "group_name"
+    wandb_tags:
+        - "tag1"
+        - "tag2"

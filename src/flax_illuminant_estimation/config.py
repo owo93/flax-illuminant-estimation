@@ -19,8 +19,11 @@ class ModelConfig:
     dim: int = 384
     depth: int = 6
     num_heads: int = 6
-    assert img_size % patch_size == 0, "Image size must be divisible by patch size"
-    assert dim % num_heads == 0, "Dimension must be divisible by number of heads"
+    dropout_rate: float = 0.1
+
+    def __post_init__(self):
+        assert self.img_size % self.patch_size == 0, "Image size must be divisible by patch size"
+        assert self.dim % self.num_heads == 0, "Dimension must be divisible by number of heads"
 
 
 @dataclass

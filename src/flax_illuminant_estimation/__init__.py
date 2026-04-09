@@ -18,7 +18,7 @@ logging.set_verbosity(logging.INFO)
 
 flags.DEFINE_enum("command", None, ["train", "infer"], "command to run")
 
-flags.DEFINE_string("config", "config.yaml", "path to config.yaml")
+flags.DEFINE_string("config", None, "path to config.yaml")
 
 flags.DEFINE_string("image", None, "path to input image")
 flags.DEFINE_string("checkpoint", None, "path to save checkpoint")
