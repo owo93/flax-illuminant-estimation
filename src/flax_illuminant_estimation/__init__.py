@@ -18,8 +18,11 @@ logging.set_verbosity(logging.INFO)
 
 flags.DEFINE_enum("command", None, ["train", "infer"], "command to run")
 
+# Train
 flags.DEFINE_string("config", None, "path to config.yaml")
+flags.DEFINE_bool("sync", False, "wandb run mode, defaults to offline")
 
+# Infer
 flags.DEFINE_string("image", None, "path to input image")
 flags.DEFINE_string("checkpoint", None, "path to save checkpoint")
 

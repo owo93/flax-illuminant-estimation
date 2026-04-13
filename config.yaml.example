@@ -13,7 +13,7 @@ trainer:
     seed: 42
     checkpoint_dir: checkpoints
     precision: float32
-    wandb: True
+run:
     wandb_group: "group_name"
     wandb_tags:
         - "tag1"

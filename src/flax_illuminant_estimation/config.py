@@ -35,9 +35,6 @@ class TrainerConfig:
     seed: int = 42
     checkpoint_dir: Path = field(default_factory=lambda: Path("checkpoints"))
     precision: Literal["float16", "bfloat16", "float32"] = "float32"
-    wandb: bool = False
-    wandb_group: str = "A"
-    wandb_tags: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         if not isinstance(self.checkpoint_dir, Path):
@@ -50,9 +47,16 @@ class TrainerConfig:
 
 
 @dataclass
+class RunConfig:
+    wandb_group: str = "A"
+    wandb_tags: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    run: RunConfig = field(default_factory=RunConfig)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "Config":
@@ -61,8 +65,11 @@ class Config:
 
         model_d = raw.get("model", {})
         trainer_d = raw.get("trainer", {})
+        run_d = raw.get("run", {})
 
-        return cls(model=ModelConfig(**model_d), trainer=TrainerConfig(**trainer_d))
+        return cls(
+            model=ModelConfig(**model_d), trainer=TrainerConfig(**trainer_d), run=RunConfig(**run_d)
+        )
 
     def to_dict(self):
         def convert(obj):

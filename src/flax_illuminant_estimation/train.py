@@ -69,20 +69,19 @@ def main():
     state: TrainState = trainer.create_train_state(model, train_steps)
 
     # Logging
-    use_wandb: bool = config.trainer.wandb
-    if use_wandb:
-        wandb.init(
-            project="flax-illuminant-estimation",
-            group=config.trainer.wandb_group,
-            tags=config.trainer.wandb_tags,
-            config=config.to_dict() | {"total_steps": total_steps},
-            settings=wandb.Settings(console="off"),
-        )
-        wandb.define_metric("step/*", step_metric="step/global")
-        wandb.define_metric("train/*", step_metric="epoch")
-        wandb.define_metric("eval/*", step_metric="epoch")
-        wandb.define_metric("iec/*", step_metric="epoch")
-        wandb.define_metric("repro/*", step_metric="epoch")
+    wandb.init(
+        project="flax-illuminant-estimation",
+        group=config.run.wandb_group,
+        tags=config.run.wandb_tags,
+        config=config.to_dict() | {"total_steps": total_steps},
+        mode="online" if FLAGS.sync else "offline",
+        settings=wandb.Settings(console="off"),
+    )
+    wandb.define_metric("step/*", step_metric="step/global")
+    wandb.define_metric("train/*", step_metric="epoch")
+    wandb.define_metric("eval/*", step_metric="epoch")
+    wandb.define_metric("iec/*", step_metric="epoch")
+    wandb.define_metric("repro/*", step_metric="epoch")
     pprint(config.to_dict(), expand_all=True, indent_guides=False)
 
     console = Console()
@@ -139,7 +138,7 @@ def main():
                 # NOTE: .compute() here accumulates the metrics across all batches in this epoch
                 _m = train_metrics.compute()
 
-                if use_wandb and i % 5 == 0:
+                if i % 5 == 0:
                     wandb.log(
                         {
                             "step/global": state.step.value,
@@ -197,29 +196,28 @@ def main():
             )
             save(ckpt, config.trainer.checkpoint_dir)
 
-            if use_wandb:
-                wandb.log(
-                    {
-                        "train/loss": float(train_m["loss"]),
-                        "train/ae": float(train_m["ae"]),
-                        "eval/loss": float(eval_m["loss"]),
-                        "eval/ae": float(eval_m["ae"]),
-                        "eval/rae": float(eval_m["rae"]),
-                        "iec/mean": errors["angular"]["mean"],
-                        "iec/median": errors["angular"]["median"],
-                        "iec/trimean": errors["angular"]["trimean"],
-                        "iec/best_25": errors["angular"]["best_25"],
-                        "iec/worst_25": errors["angular"]["worst_25"],
-                        "iec/worst": errors["angular"]["worst"],
-                        "repro/mean": errors["repro"]["mean"],
-                        "repro/median": errors["repro"]["median"],
-                        "repro/trimean": errors["repro"]["trimean"],
-                        "repro/best_25": errors["repro"]["best_25"],
-                        "repro/worst_25": errors["repro"]["worst_25"],
-                        "repro/worst": errors["repro"]["worst"],
-                        "epoch": epoch + 1,
-                    }
-                )
+            wandb.log(
+                {
+                    "train/loss": float(train_m["loss"]),
+                    "train/ae": float(train_m["ae"]),
+                    "eval/loss": float(eval_m["loss"]),
+                    "eval/ae": float(eval_m["ae"]),
+                    "eval/rae": float(eval_m["rae"]),
+                    "iec/mean": errors["angular"]["mean"],
+                    "iec/median": errors["angular"]["median"],
+                    "iec/trimean": errors["angular"]["trimean"],
+                    "iec/best_25": errors["angular"]["best_25"],
+                    "iec/worst_25": errors["angular"]["worst_25"],
+                    "iec/worst": errors["angular"]["worst"],
+                    "repro/mean": errors["repro"]["mean"],
+                    "repro/median": errors["repro"]["median"],
+                    "repro/trimean": errors["repro"]["trimean"],
+                    "repro/best_25": errors["repro"]["best_25"],
+                    "repro/worst_25": errors["repro"]["worst_25"],
+                    "repro/worst": errors["repro"]["worst"],
+                    "epoch": epoch + 1,
+                }
+            )
 
             table.add_row(
                 f"{str(epoch + 1).zfill(2)}",
@@ -230,8 +228,7 @@ def main():
                 f"{float(eval_m['rae']):.3f}\xb0",
             )
 
-        if use_wandb:
-            wandb.finish()
+        wandb.finish()
 
 
 if __name__ == "__main__":
