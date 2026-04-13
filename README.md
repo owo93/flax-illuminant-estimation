@@ -2,30 +2,25 @@
 
 An implementation of Vision Transformer for predicting single illuminant color in images trained on the [SimpleCube++](https://github.com/Visillect/CubePlusPlus)  dataset, built with Flax NNX
 
-```
-src/
-├── config.yaml          hyperparameters
-├── data/
-│   ├── SimpleCube++     dataset
-│   └── loader.py
-└── flax_illuminant_estimation/
-    ├── config.py        trainer & model config
-    ├── model.py         ViT definition
-    ├── train.py         training loop
-    └── infer.py         inference script
-```
-
 ## Usage
 By default, [`rich`](https://github.com/textualize/rich) terminal output is logged to `stdout` and `logging` log messages to `stderr`. 
+> [!TIP]
+> Live tail the logs with `tail -f output.log` in a separate terminal.
 
-### Training
-To train model with given hyperparameters:
+## Training
+- `--config`: path to yaml file with hyperparameters (see [example](config.yaml.example))
+- `--sync`: enables live-syncing to W&B
 ```bash
-illum train --config "path_to_config" 2 > logs
+illum train --config "path_to_config" --sync 2> output.log
 ```
 
-### Inference
+## Inference
 To infer illuminant chromaticities on an image:
+- `--image`: path to input image
+- `--checkpoint`: path to model checkpoint to use
 ```bash
-illum infer --image "path_to_image" --checkpoint "path_to_checkpoint" 2 > logs
+illum infer --image img.png --checkpoint checkpoints/checkpoint_13 2> output.log
 ```
+
+## Acknowledgements
+- [ ] TODO
